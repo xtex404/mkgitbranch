@@ -1,0 +1,17 @@
+[project]
+name = "mkgitbranch"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Justin M", email = "xtex404@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = []
+
+[project.scripts]
+mkgitbranch = "mkgitbranch:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
