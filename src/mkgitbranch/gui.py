@@ -172,13 +172,24 @@ class BranchDialog(QDialog):
         """
         Normalize and validate JIRA field.
 
+        If the user switches from letters to numbers without a dash, insert the dash automatically.
+
         Args:
             text: Input text from JIRA field.
         """
         filtered = "".join(c for c in text.upper() if c.isalnum() or c == "-")
+        # Auto-insert dash if user switches from letters to numbers without a dash
+        if "-" not in filtered:
+            # Find the first digit after a sequence of letters
+            match = re.match(r"^([A-Z]+)([0-9].*)$", filtered)
+            if match:
+                filtered = f"{match.group(1)}-{match.group(2)}"
         if filtered != text:
             cursor = self.jira_edit.cursorPosition()
             self.jira_edit.setText(filtered)
+            # Adjust cursor position if dash was inserted
+            if "-" in filtered and "-" not in text:
+                cursor += 1
             self.jira_edit.setCursorPosition(min(cursor, len(filtered)))
         self.update_preview()
 
@@ -294,22 +305,51 @@ class BranchDialog(QDialog):
             >>> dlg = BranchDialog()
             >>> dlg.create_branch()
         """
+        import shlex
+
         branch = self.preview_value_label.text()
         if not branch:
             return
         config = load_config()
         template = config.get(
             "branch_create_command_template",
-            'git branch --quiet --create "{branch_name}"',
+            'git switch --quiet --create --track inherit "{branch_name}"',
         )
-        command = template.replace("{branch_name}", branch)
+
+        # Sanitize the branch name for shell usage
+        safe_branch = shlex.quote(branch)
+        command = template.replace("{branch_name}", safe_branch)
+
+        # If the command is a 'git branch ...' command, remove '--track' and its parameter, and log a warning
+        command_args = shlex.split(command)
+        if len(command_args) > 1 and command_args[1] == "branch":
+            # Remove '--track' and the parameter following it
+            new_args = []
+            skip_next = False
+            for i, arg in enumerate(command_args):
+                if skip_next:
+                    skip_next = False
+                    continue
+                if arg == "--track":
+                    skip_next = True
+                    continue
+                new_args.append(arg)
+            logger.warning(
+                "Detected use of 'git branch' for branch creation; '--track' parameter has been removed. "
+                "It is recommended to use 'git switch' for branch creation."
+            )
+            command_args = new_args
+            command = shlex.join(command_args)
+
+        # Ensure all arguments are properly escaped and sanitized
+        # If using shell=True, pass a single string; if shell=False, pass a list
         try:
             logger.debug(
                 f"Running subprocess: {command} with env: {_filtered_env_for_log(self.env)}"
             )
             result = subprocess.run(
-                command,
-                shell=True,
+                command_args if not isinstance(command, str) else command,
+                shell=isinstance(command, str),
                 capture_output=True,
                 text=True,
                 env=self.env,

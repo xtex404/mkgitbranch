@@ -5,8 +5,9 @@ This module provides functions for interacting with git, such as retrieving the 
 """
 
 import re
+import shlex
 import subprocess
-from typing import Optional
+from typing import Any, Optional
 
 from PySide6.QtWidgets import QApplication
 from loguru import logger
@@ -17,6 +18,9 @@ __all__ = [
     "get_current_git_branch",
     "show_git_error_dialog",
     "parse_branch_for_jira_and_type",
+    "is_branch_tracked_by_remote",
+    "run_git_create_branch",
+    "run_git_checkout_branch",
 ]
 
 def get_current_git_branch(env: dict[str, str] | None = None) -> Optional[str]:
@@ -157,3 +161,117 @@ def is_branch_tracked_by_remote(branch: str, env: dict[str, str] | None = None) 
     except Exception as exc:
         logger.error(f"Failed to check if branch '{branch}' is tracked by a remote: {exc}")
         raise RuntimeError(f"Failed to check if branch '{branch}' is tracked by a remote: {exc}")
+
+def run_git_create_branch(
+    branch: str,
+    template: str,
+    env: dict[str, str] | None = None,
+    parent: Any = None,
+) -> bool:
+    """
+    Create a new git branch using the provided template.
+
+    If the command is 'git branch', remove '--track' and its parameter and log a warning.
+    Returns True if 'git branch' was used, otherwise False.
+
+    Args:
+        branch: The branch name to create.
+        template: The command template string.
+        env: Optional environment variables for subprocess.
+        parent: Parent widget for dialogs.
+
+    Returns:
+        bool: True if 'git branch' was used, False otherwise.
+
+    Raises:
+        SystemExit: If the git command fails.
+    """
+    safe_branch = shlex.quote(branch)
+    command = template.replace("{branch_name}", safe_branch)
+    command_args = shlex.split(command)
+    used_git_branch = False
+    if len(command_args) > 1 and command_args[1] == "branch":
+        new_args = []
+        skip_next = False
+        for arg in command_args:
+            if skip_next:
+                skip_next = False
+                continue
+            if arg == "--track":
+                skip_next = True
+                continue
+            new_args.append(arg)
+        logger.warning(
+            "Detected use of 'git branch' for branch creation; '--track' parameter has been removed. "
+            "It is recommended to use 'git switch' for branch creation"
+        )
+        command_args = new_args
+        command = shlex.join(command_args)
+        used_git_branch = True
+
+    logger.debug(
+        f"Running subprocess: {command} with env: {{k: v for k, v in (env or {{}}).items() if k == 'PATH' or k.startswith('GIT_')}}"
+    )
+    result = subprocess.run(
+        command_args,
+        shell=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    logger.debug(f"subprocess stdout: {result.stdout}")
+    logger.debug(f"subprocess stderr: {result.stderr}")
+    if result.returncode != 0:
+        logger.error(f"Git command failed with return code {result.returncode}, stderr: {result.stderr}")
+        from .gui import ErrorDialog
+        dlg = ErrorDialog(
+            result.stderr or result.stdout or "Unknown error",
+            result.returncode,
+            parent,
+        )
+        dlg.exec()
+        import sys
+        sys.exit(result.returncode)
+    return used_git_branch
+
+def run_git_checkout_branch(
+    branch: str,
+    env: dict[str, str] | None = None,
+    parent: Any = None,
+) -> None:
+    """
+    Switch to the given branch using 'git checkout {branch}'.
+
+    Args:
+        branch: The branch name to switch to.
+        env: Optional environment variables for subprocess.
+        parent: Parent widget for dialogs.
+
+    Raises:
+        SystemExit: If the checkout fails.
+    """
+    cmd = ["git", "checkout", branch]
+    logger.warning(f"Running 'git checkout {branch}' to switch to the new branch after 'git branch'")
+    logger.debug(
+        f"Running subprocess: {shlex.join(cmd)} with env: {{k: v for k, v in (env or {{}}).items() if k == 'PATH' or k.startswith('GIT_')}}"
+    )
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    logger.debug(f"subprocess stdout: {result.stdout}")
+    logger.debug(f"subprocess stderr: {result.stderr}")
+    if result.returncode != 0:
+        logger.error(f"Git checkout failed with return code {result.returncode}, stderr: {result.stderr}")
+        from .gui import ErrorDialog
+        dlg = ErrorDialog(
+            result.stderr or result.stdout or "Unknown error",
+            result.returncode,
+            parent,
+            header_message="Failed to switch to new branch",
+        )
+        dlg.exec()
+        import sys
+        sys.exit(result.returncode)
