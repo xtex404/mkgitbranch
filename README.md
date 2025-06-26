@@ -119,6 +119,53 @@ Contributions are welcome! Please open issues or pull requests on GitHub.
 
 This project is licensed under the MIT License.
 
+## Building Standalone Executables
+
+mkgitbranch can be packaged as a standalone executable for macOS and Windows using Hatch and PyInstaller.
+
+### Prerequisites
+- Python 3.13+
+- [uv](https://github.com/astral-sh/uv) (recommended for dependency management; install with `pip install uv`)
+- [Hatch](https://hatch.pypa.io/latest/) (install with `uv pip install hatch`)
+- Platform-specific build tools (e.g., Xcode command line tools for macOS, Visual Studio Build Tools for Windows)
+
+### Build Steps
+
+1. Create and activate a virtual environment using uv:
+   ```sh
+   uv venv
+   source .venv/bin/activate  # or .venv\Scripts\activate on Windows
+   ```
+
+2. Install dependencies with uv:
+   ```sh
+   uv pip install -e .
+   uv pip install pyinstaller
+   uv pip install hatch
+   ```
+
+3. Build the standalone executable:
+   ```sh
+   hatch run pyinstaller:pyinstaller --onefile --windowed --name mkgitbranch src/mkgitbranch/gui.py
+   ```
+   - The output executable will be in the `dist/` directory.
+   - For CLI-only builds, remove `--windowed`.
+
+4. (Optional) Build for a specific platform:
+   - On Windows:
+     ```sh
+     hatch run windows:pyinstaller --onefile --windowed --name mkgitbranch src/mkgitbranch/gui.py
+     ```
+   - On macOS:
+     ```sh
+     hatch run macos:pyinstaller --onefile --windowed --name mkgitbranch src/mkgitbranch/gui.py
+     ```
+
+### Notes
+- The generated executable is self-contained and does not require Python to be installed on the target system.
+- You may need to adjust the `add-data` option in `pyproject.toml` to include additional resources.
+- For advanced PyInstaller configuration, see the [PyInstaller documentation](https://pyinstaller.org/).
+
 ---
 
 For more information, see the source code and inline documentation.

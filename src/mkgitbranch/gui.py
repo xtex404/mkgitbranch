@@ -9,32 +9,32 @@ Example:
 """
 
 
+import argparse
 import getpass
 import os
 import re
 import subprocess
+import tomllib
 from pathlib import Path
 from typing import Optional, Any
-from loguru import logger
-import argparse
-import tomllib
-import platformdirs
 
+import platformdirs
+from PySide6.QtCore import Qt, QTimer, QEvent
+from PySide6.QtGui import QClipboard
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QDialog,
-    QFormLayout,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
     QVBoxLayout,
-    QMessageBox,
 )
-from PySide6.QtCore import Qt, QUrl, QTimer, QEvent
-from PySide6.QtGui import QClipboard, QDesktopServices
+from loguru import logger
+from .config import load_config, load_regexes
+from .git_utils import get_current_git_branch, show_git_error_dialog, parse_branch_for_jira_and_type
 
 BRANCH_TYPES: list[str] = ["feat", "fix", "chore", "test", "refactor", "hotfix"]
 
@@ -43,195 +43,6 @@ CONFIG_PATH: Path = (Path(__file__).parent.parent.parent / "mkgitbranch_config.t
 
 APPLICATION_NAME: str = "mkgitbranch"
 
-def find_pyproject_config(start_path: Path) -> dict[str, Any]:
-    """
-    Walk backwards from start_path to root, looking for a pyproject.toml file.
-    If found, return the [tool.mkgitbranch] section as a dict, or {} if not found.
-
-    Args:
-        start_path: The directory to start searching from.
-
-    Returns:
-        dict: The [tool.mkgitbranch] config dict, or {} if not found or invalid.
-    """
-    current = start_path.expanduser().resolve()
-    logger.debug(f"Searching for pyproject.toml starting from {current}")
-    for parent in [current] + list(current.parents):
-        pyproject = parent / "pyproject.toml"
-        logger.debug(f"Checking for pyproject.toml at {pyproject}")
-        if pyproject.is_file():
-            logger.debug(f"Found pyproject.toml at {pyproject}")
-            try:
-                with pyproject.open("rb") as f:
-                    data = tomllib.load(f)
-                # Defensive: ensure nested dicts exist
-                tool_section = data.get("tool")
-                if not isinstance(tool_section, dict):
-                    logger.debug(f"No [tool] section in {pyproject}")
-                    continue
-                mkgitbranch_section = tool_section.get("mkgitbranch")
-                if isinstance(mkgitbranch_section, dict):
-                    logger.debug(f"Found [tool.mkgitbranch] section in {pyproject}")
-                    return mkgitbranch_section
-                else:
-                    logger.debug(f"No [tool.mkgitbranch] section in {pyproject}")
-                    return {}
-            except Exception as e:
-                logger.error(f"Failed to read pyproject.toml at {pyproject}: {e}")
-                return {}
-    logger.debug("No pyproject.toml with [tool.mkgitbranch] found in any parent directory")
-    return {}
-
-def find_toml_config(path: Path) -> dict[str, Any]:
-    """
-    Load a TOML config file if it exists.
-
-    Args:
-        path: Path to the TOML file.
-
-    Returns:
-        dict: The config dict, or {} if not found or invalid.
-    """
-    logger.debug(f"Checking for config file at {path}")
-    if path.is_file():
-        logger.debug(f"Found config file at {path}")
-        try:
-            with path.open("rb") as f:
-                config = tomllib.load(f)
-            logger.debug(f"Loaded config from {path}")
-            return config
-        except Exception as e:
-            logger.error(f"Failed to read config at {path}: {e}")
-            return {}
-    logger.debug(f"No config file found at {path}")
-    return {}
-
-def load_config() -> dict[str, Any]:
-    """
-    Load configuration from the first available source:
-    1. pyproject.toml [tool.mkgitbranch] (searching upwards from cwd)
-    2. mkgitbranch.toml in $XDG_CONFIG_HOME/mkgitbranch/
-    3. mkgitbranch.toml in platformdirs.user_config_dir
-    4. .mkgitbranch.toml in the user home directory
-
-    Returns:
-        dict: Configuration dictionary. Empty if file not found or invalid.
-    """
-    logger.debug("Starting configuration loading process")
-
-    # 1. pyproject.toml [tool.mkgitbranch]
-    cwd = Path.cwd()
-    logger.debug(f"Attempting to load config from pyproject.toml [tool.mkgitbranch] starting at {cwd}")
-    pyproject_config = find_pyproject_config(cwd)
-    if pyproject_config:
-        logger.debug("Using configuration from pyproject.toml [tool.mkgitbranch]")
-        return pyproject_config
-
-    # 2. mkgitbranch.toml in $XDG_CONFIG_HOME/mkgitbranch/
-    xdg_config_home = os.environ.get("XDG_CONFIG_HOME")
-    if xdg_config_home:
-        xdg_config_path = Path(xdg_config_home).expanduser().resolve() / "mkgitbranch" / "mkgitbranch.toml"
-        logger.debug(f"Attempting to load config from {xdg_config_path} (XDG_CONFIG_HOME)")
-        config = find_toml_config(xdg_config_path)
-        if config:
-            logger.debug(f"Using configuration from {xdg_config_path}")
-            return config
-
-    # 3. mkgitbranch.toml in platformdirs.user_config_dir
-    config_dir = Path(platformdirs.user_config_dir("mkgitbranch")).expanduser().resolve()
-    config_path = config_dir / "mkgitbranch.toml"
-    logger.debug(f"Attempting to load config from {config_path}")
-    config = find_toml_config(config_path)
-    if config:
-        logger.debug(f"Using configuration from {config_path}")
-        return config
-
-    # 4. .mkgitbranch.toml in user home directory
-    home_config_path = Path.home().expanduser().resolve() / ".mkgitbranch.toml"
-    logger.debug(f"Attempting to load config from {home_config_path}")
-    config = find_toml_config(home_config_path)
-    if config:
-        logger.debug(f"Using configuration from {home_config_path}")
-        return config
-
-    logger.debug("No configuration file found, using empty config")
-    return {}
-
-
-def load_regexes() -> dict[str, re.Pattern]:
-    """
-    Load regex patterns for field validation from mkgitbranch_config.toml.
-
-    Returns:
-        dict: Dictionary of regex patterns for username, type, jira, and description.
-    """
-    config = load_config()
-    regex_section = config.get("regex", {})
-    return {
-        "username": re.compile(regex_section.get("username", r"^[a-zA-Z0-9_-]{2,7}$")),
-        "type": re.compile(regex_section.get("type", r"^(feat|fix|chore|test|refactor|hotfix)$")),
-        "jira": re.compile(regex_section.get("jira", r"^[A-Z]{2,6}-[1-9][0-9]{,4}$")),
-        "description": re.compile(regex_section.get("description", r"^[a-z][a-z0-9-]{,30}$")),
-    }
-
-
-def get_current_git_branch(env: dict[str, str] | None = None) -> Optional[str]:
-    """
-    Return the current git branch name, or None if not in a git repo.
-
-    If an error occurs, display an error dialog and exit with code 1.
-
-    Args:
-        env: Optional environment variables to use for subprocess.
-
-    Returns:
-        str | None: Current branch name, or None if not found.
-
-    Raises:
-        SystemExit: If the branch name is blank, unknown, or an error occurs.
-
-    Examples:
-        >>> get_current_git_branch()
-        'main'
-    """
-    try:
-        logger.debug(
-            f"Running subprocess: ['git', 'rev-parse', '--abbrev-ref', 'HEAD'] "
-            f"with env: {_filtered_env_for_log(env)}"
-        )
-        result = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True,
-            text=True,
-            check=False,
-            env=env,
-        )
-        logger.debug(f"subprocess stdout: {result.stdout}")
-        logger.debug(f"subprocess stderr: {result.stderr}")
-        if result.returncode != 0:
-            logger.error(f"git rev-parse failed with return code {result.returncode}, stderr: {result.stderr}")
-            _show_git_error_dialog(
-                result.stderr or result.stdout or "Unknown error",
-                exit_code=1,
-                header_message="Failed to get current git branch"
-            )
-        branch = result.stdout.strip()
-        if not branch or branch.lower() == "unknown":
-            logger.error(f"Current branch is blank or unknown: '{branch}'")
-            _show_git_error_dialog(
-                "Current branch is blank or unknown",
-                exit_code=1,
-                header_message="Failed to get current git branch"
-            )
-        return branch
-    except Exception as exc:
-        logger.error(f"Exception in get_current_git_branch: {exc}")
-        _show_git_error_dialog(
-            str(exc),
-            exit_code=1,
-            header_message="Failed to get current git branch"
-        )
-        return None
 
 def _show_git_error_dialog(message: str, exit_code: int = 1, header_message: str = None) -> None:
     """
@@ -253,38 +64,6 @@ def _show_git_error_dialog(message: str, exit_code: int = 1, header_message: str
     )
     dlg.exec()
     sys.exit(exit_code)
-
-def parse_branch_for_jira_and_type(branch: str) -> tuple[Optional[str], Optional[str]]:
-    """
-    Extract JIRA issue and type from a branch name if present.
-
-    Args:
-        branch: Branch name string.
-
-    Returns:
-        tuple: (jira, type) if found, else (None, None).
-    """
-    regexes = load_regexes()
-    jira = None
-    type_ = None
-    m = regexes["jira"].search(branch)
-    if m:
-        jira = m.group(0)
-    type_match = re.search(r"/(%s)/" % "|".join([re.escape(t) for t in BRANCH_TYPES]), branch)
-    if type_match:
-        type_ = type_match.group(1)
-    return jira, type_
-
-
-def get_os_username() -> str:
-    """
-    Get the current OS username.
-
-    Returns:
-        str: Username of the current OS user.
-    """
-    return getpass.getuser()
-
 
 def format_branch_name(username: str, type_: str, jira: str, description: str) -> str:
     """
@@ -587,9 +366,10 @@ class BranchDialog(QDialog):
         Returns:
             bool: True if event handled, else False.
         """
+        from PySide6.QtGui import QKeyEvent
         # Tab in JIRA field: jump after dash if selected
         if obj == self.jira_edit and event.type() == QEvent.Type.KeyPress:
-            if event.key() == Qt.Key.Key_Tab:
+            if isinstance(event, QKeyEvent) and event.key() == Qt.Key.Key_Tab:
                 if self.jira_edit.hasSelectedText():
                     dash_pos = self.jira_edit.text().find('-')
                     if dash_pos != -1:
@@ -598,10 +378,10 @@ class BranchDialog(QDialog):
                         return True
         # Tab or Enter in description field: focus/create
         if obj == self.desc_edit and event.type() == QEvent.Type.KeyPress:
-            if event.key() == Qt.Key.Key_Tab:
+            if isinstance(event, QKeyEvent) and event.key() == Qt.Key.Key_Tab:
                 self.create_btn.setFocus()
                 return True
-            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            if isinstance(event, QKeyEvent) and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
                 if self.create_btn.isEnabled():
                     self.create_branch()
                     return True
@@ -629,6 +409,15 @@ class BranchDialog(QDialog):
         username = config_username if config_username is not None else get_os_username()
         username_readonly = config.get("username_readonly", False)
 
+        self._setup_fields(username, username_readonly, type_, jira, config)
+        self._setup_ui(config)
+        self._setup_timers(config)
+        self.update_preview()
+
+    def _setup_fields(self, username: str, username_readonly: bool, type_: str, jira: str, config: dict[str, Any]) -> None:
+        """
+        Set up the input fields for the dialog.
+        """
         self.username_edit = QLineEdit(username)
         self.username_edit.setReadOnly(bool(username_readonly))
         self.username_edit.setStyleSheet("padding: 4px;")
@@ -648,12 +437,22 @@ class BranchDialog(QDialog):
         self.create_btn.setEnabled(False)
         self.create_btn.clicked.connect(self.create_branch)
         self.cancel_btn.clicked.connect(self.reject)
-        self.copy_btn.clicked.connect(self.copy_to_clipboard)  # <-- add this line
-
-        # Set button widths
+        self.copy_btn.clicked.connect(self.copy_to_clipboard)
         for btn in (self.cancel_btn, self.copy_btn, self.create_btn):
             btn.setFixedWidth(125)
+        field_widths = config.get("field_widths", {})
+        self.username_edit.setFixedWidth(field_widths.get("username", 100))
+        self.type_combo.setFixedWidth(field_widths.get("type", 110))
+        self.jira_edit.setFixedWidth(field_widths.get("jira", 90))
+        self.desc_edit.setFixedWidth(field_widths.get("description", 250))
+        self.setup_field_normalization()
+        self.jira_edit.installEventFilter(self)
+        self.desc_edit.installEventFilter(self)
 
+    def _setup_ui(self, config: dict[str, Any]) -> None:
+        """
+        Set up the UI layout and theme for the dialog.
+        """
         theme = config.get("theme", {})
         import platform
         is_dark = False
@@ -673,8 +472,6 @@ class BranchDialog(QDialog):
                     is_dark = True
         palette_key = "dark" if is_dark else "light"
         palette = theme.get(palette_key, {})
-
-        # Set default colors for dark and light mode, invert as requested
         if is_dark:
             error_fg = palette.get("error_foreground", "#EE4B2B")
             label_fg = palette.get("label_foreground", "#cccccc")
@@ -683,22 +480,16 @@ class BranchDialog(QDialog):
             error_fg = palette.get("error_foreground", "#ffffff")
             label_fg = palette.get("label_foreground", "#222222")
             field_fg = palette.get("field_foreground", "#EE4B2B")
-
         self._error_fg = error_fg
-        self._field_fg = field_fg  # Store field_foreground for use in _set_field_color
-
-        # Apply only foreground color, no background color
+        self._field_fg = field_fg
         field_style = ""
         if field_fg:
             field_style += f"color: {field_fg};"
-
-        # Set style for all field widgets
         for widget in (self.username_edit, self.jira_edit, self.desc_edit):
             widget.setStyleSheet(widget.styleSheet() + field_style)
         self.type_combo.setStyleSheet(self.type_combo.styleSheet() + field_style)
         if self.type_combo.lineEdit() is not None:
             self.type_combo.lineEdit().setStyleSheet(self.type_combo.lineEdit().styleSheet() + field_style)
-
         grid = QGridLayout()
         grid.addWidget(self.username_edit, 0, 0)
         slash1 = QLabel("/")
@@ -732,22 +523,15 @@ class BranchDialog(QDialog):
         desc_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         desc_label.setStyleSheet(f"color: {label_fg};")
         grid.addWidget(desc_label, 1, 6)
-
-        # Button layout: right-aligned
         btns = QHBoxLayout()
         btns.addStretch(1)
         btns.addWidget(self.cancel_btn)
         btns.addWidget(self.copy_btn)
         btns.addWidget(self.create_btn)
-
         layout = QVBoxLayout()
         layout.addLayout(grid)
-
-        # Add 10px space above preview
         from PySide6.QtWidgets import QSpacerItem, QSizePolicy
         layout.addSpacerItem(QSpacerItem(0, 10, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed))
-
-        # Centered, monospace preview label
         self.preview_value_label = QLabel()
         self.preview_value_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.preview_value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -755,23 +539,9 @@ class BranchDialog(QDialog):
             "font-family: Menlo, Monaco, 'Fira Mono', 'Liberation Mono', monospace; font-size: 1.1em;"
         )
         layout.addWidget(self.preview_value_label)
-
-        # Add 10px space below preview
         layout.addSpacerItem(QSpacerItem(0, 10, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed))
-
         layout.addLayout(btns)
         self.setLayout(layout)
-
-        field_widths = config.get("field_widths", {})
-        self.username_edit.setFixedWidth(field_widths.get("username", 100))
-        self.type_combo.setFixedWidth(field_widths.get("type", 110))
-        self.jira_edit.setFixedWidth(field_widths.get("jira", 90))
-        self.desc_edit.setFixedWidth(field_widths.get("description", 250))
-
-        self.setup_field_normalization()
-        self.jira_edit.installEventFilter(self)
-        self.desc_edit.installEventFilter(self)
-
         cursor_start = config.get("cursor_start", "description")
         jira_regex = self.regexes["jira"]
         jira_text = self.jira_edit.text()
@@ -800,6 +570,10 @@ class BranchDialog(QDialog):
             self.desc_edit.setFocus()
             self.desc_edit.setCursorPosition(0)
 
+    def _setup_timers(self, config: dict[str, Any]) -> None:
+        """
+        Set up the inactivity timeout timer for the dialog.
+        """
         timeout_minutes = config.get("timeout_minutes", 10)
         if timeout_minutes and timeout_minutes > 0:
             self.timeout_timer = QTimer(self)
@@ -850,6 +624,11 @@ def run_app() -> None:
     """
     Run the mkgitbranch GUI application.
 
+    This function determines the working directory for git operations in the following order:
+    1. If the GIT_WORK_TREE environment variable is set, use its value as the worktree and do not modify it.
+    2. If the --directory argument is provided, use it as the worktree and set GIT_WORK_TREE accordingly.
+    3. Otherwise, use the current working directory.
+
     Raises:
         SystemExit: If the directory is invalid or not a git repo.
 
@@ -857,7 +636,6 @@ def run_app() -> None:
         >>> run_app()
     """
     import sys
-    import pathlib
 
     parser = argparse.ArgumentParser(description="Generate a conventional git branch name.")
     parser.add_argument(
@@ -876,7 +654,13 @@ def run_app() -> None:
         logger.add(sys.stderr, level="INFO")
     env = os.environ.copy()
     work_tree = None
-    if args.directory:
+
+    # Prefer GIT_WORK_TREE if set in the environment
+    git_work_tree_env = env.get("GIT_WORK_TREE")
+    if git_work_tree_env:
+        work_tree = git_work_tree_env
+        # Do not change env or cwd if GIT_WORK_TREE is set
+    elif args.directory:
         dir_path = Path(args.directory).expanduser().resolve()
         if dir_path.is_dir():
             env["GIT_WORK_TREE"] = str(dir_path)
@@ -892,6 +676,7 @@ def run_app() -> None:
             )
             dlg.exec()
             sys.exit(1)
+    # If neither GIT_WORK_TREE nor directory is set, use current directory
     try:
         logger.debug(
             f"Running subprocess: ['git', 'rev-parse', '--is-inside-work-tree'] "
@@ -909,10 +694,10 @@ def run_app() -> None:
         if result.stdout.strip() != "true":
             raise Exception()
     except Exception:
-        logger.error(f"Directory is not a valid git repo: {args.directory}")
+        logger.error(f"Directory is not a valid git repo: {work_tree or args.directory or os.getcwd()}")
         app = QApplication(sys.argv)
         dlg = ErrorDialog(
-            f'<span style="text-align:center;font-family:Menlo,Monaco,monospace;font-size:0.8em;">{args.directory}</span> is not a valid git repo!',
+            f'<span style="text-align:center;font-family:Menlo,Monaco,monospace;font-size:0.8em;">{work_tree or args.directory or os.getcwd()}</span> is not a valid git repo!',
             parent=None,
             exit_code=1,
         )

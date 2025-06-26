@@ -1,0 +1,77 @@
+# mkgitbranch_config.sample.toml
+# Example configuration file for mkgitbranch
+#
+# This file customizes the behavior and appearance of the mkgitbranch tool.
+# Place this file in your project root or in your user config directory.
+# For project-specific settings, you can also embed these options in [tool.mkgitbranch] in pyproject.toml.
+
+# The username to use as the branch prefix.
+# If omitted, the current OS username will be used.
+username = "jm"
+
+# If true, the username field will be read-only in the GUI.
+username_readonly = false
+
+# Optional prefix to pre-fill in the JIRA field (e.g., your team's project key).
+jira_prefix = "IAS-"
+
+# Timeout in minutes before the GUI auto-exits due to inactivity.
+timeout_minutes = 10
+
+# Which field should be focused when the dialog opens.
+# Valid values: "description", "username", "jira_start", "jira_after_dash"
+cursor_start = "description"
+
+# Template for the branch creation command.
+# {branch_name} will be replaced with the generated branch name.
+branch_create_command_template = 'git switch --quiet --create --track inherit "{branch_name}"'
+
+[regex]
+# Regular expression for validating the username field.
+username = "^[a-zA-Z0-9_-]{2,7}$"
+
+# Regular expression for allowed branch types.
+type = "^(feat|fix|chore|test|refactor|hotfix)$"
+
+# Regular expression for JIRA issue keys (e.g., ABC-123).
+jira = "^[A-Z]{2,6}-[1-9][0-9]{,4}$"
+
+# Regular expression for the description field.
+description = "^[a-z][a-z0-9-]{,30}$"
+
+[field_widths]
+# Width (in pixels) for the username field.
+username = 100
+
+# Width (in pixels) for the type dropdown.
+type = 110
+
+# Width (in pixels) for the JIRA field.
+jira = 90
+
+# Width (in pixels) for the description field.
+description = 250
+
+[theme.light]
+# Foreground color for error messages in light mode.
+error_foreground = "#8B0000"
+
+# Foreground color for labels in light mode.
+label_foreground = "#222222"
+
+# Uncomment and customize the following for additional styling:
+# field_background = "#0000dd"
+# field_foreground = "#222222"
+
+[theme.dark]
+# Foreground color for error messages in dark mode.
+error_foreground = "#EE4B2B"
+
+# Foreground color for labels in dark mode.
+label_foreground = "#cccccc"
+
+# Foreground color for input fields in dark mode.
+field_foreground = "#ffffff"
+
+# Uncomment and customize the following for additional styling:
+# field_background = "#222222"
