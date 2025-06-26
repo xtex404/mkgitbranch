@@ -1,17 +1,35 @@
 [project]
 name = "mkgitbranch"
 version = "0.1.0"
-description = "Add your description here"
-readme = "README.md"
+description = "Cross-platform GUI tool for generating conventional git branch names."
 authors = [
-    { name = "Justin M", email = "xtex404@gmail.com" }
-]
+    { name = "Justin Matlock", email = "xtex404@gmail.com" }
+    ]
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "loguru>=0.7.3",
+    "PySide6>=6.7.0",
+]
 
-[project.scripts]
-mkgitbranch = "mkgitbranch:main"
+[tool.ruff]
+line-length = 110
+
+[tool.mypy]
+python_version = "3.13"
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-ra -q"
 
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[dependency-groups]
+dev = [
+    "black>=25.1.0",
+    "flake8>=7.3.0",
+    "flake8-import-order>=0.19.2",
+    "isort>=6.0.1",
+    "ruff>=0.12.0",
+]
