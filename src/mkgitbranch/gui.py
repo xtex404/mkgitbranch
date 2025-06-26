@@ -29,6 +29,8 @@ from PySide6.QtWidgets import (
     QPushButton,
     QVBoxLayout,
 )
+from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
+from PySide6.QtCore import QUrl
 from loguru import logger
 
 from mkgitbranch.config import load_config, load_regexes
@@ -128,6 +130,87 @@ class ErrorDialog(QDialog):
         layout.addLayout(btn_layout)
         self.setLayout(layout)
         self.exit_code = exit_code
+
+
+class SuccessDialog(QDialog):
+    """
+    Dialog to display a success message after branch creation.
+
+    Exits the application with code 0 when the user presses OK or after a 1-minute timeout.
+    Plays a configurable sound file when shown.
+
+    Args:
+        message: Success message to display.
+        parent: Parent widget.
+        window_title: Window title for the dialog.
+        timeout_seconds: Timeout in seconds before auto-exit.
+        sound_file: Path to the sound file to play.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        parent: Any = None,
+        window_title: str = f"{APPLICATION_NAME} Success",
+        timeout_seconds: int = 60,
+        sound_file: str = "resources/leeroy.mp3",
+    ):
+        super().__init__(parent)
+        self.setWindowTitle(window_title)
+        self.setMinimumWidth(400)
+        layout = QVBoxLayout()
+
+        success_label = QLabel(
+            f'<div style="text-align:center; font-weight:bold; color:#228B22;">{message}</div>'
+        )
+        success_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(success_label)
+
+        from PySide6.QtWidgets import QSpacerItem, QSizePolicy
+        layout.addSpacerItem(QSpacerItem(0, 13, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed))
+
+        self.ok_btn = QPushButton("OK")
+        self.ok_btn.setFixedWidth(130)
+        self.ok_btn.clicked.connect(self._on_ok)
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch(1)
+        btn_layout.addWidget(self.ok_btn)
+        layout.addLayout(btn_layout)
+        self.setLayout(layout)
+
+        # Timer for auto-close
+        self._timer = QTimer(self)
+        self._timer.setInterval(timeout_seconds * 1000)
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(self._on_ok)
+        self._timer.start()
+
+        # Play sound if file exists
+        self._player = None
+        if sound_file:
+            self._play_sound(sound_file)
+
+    def _play_sound(self, sound_file: str) -> None:
+        """
+        Play the specified sound file using QMediaPlayer.
+
+        Args:
+            sound_file: Path to the sound file.
+        """
+        import os
+        if not os.path.isfile(sound_file):
+            return
+        self._player = QMediaPlayer(self)
+        self._audio_output = QAudioOutput(self)
+        self._player.setAudioOutput(self._audio_output)
+        self._player.setSource(QUrl.fromLocalFile(os.path.abspath(sound_file)))
+        self._audio_output.setVolume(0.8)
+        self._player.play()
+
+    def _on_ok(self) -> None:
+        """Exit with code 0 on OK or timeout."""
+        import sys
+        sys.exit(0)
 
 
 class BranchDialog(QDialog):
@@ -297,6 +380,7 @@ class BranchDialog(QDialog):
 
         After executing the branch creation command, re-check the current git branch.
         If the branch has not changed to the expected branch, display an error dialog.
+        On success, display a success dialog and exit with code 0.
 
         Raises:
             SystemExit: If the git command fails or the branch is not switched.
@@ -341,8 +425,6 @@ class BranchDialog(QDialog):
             command_args = new_args
             command = shlex.join(command_args)
 
-        # Ensure all arguments are properly escaped and sanitized
-        # If using shell=True, pass a single string; if shell=False, pass a list
         try:
             logger.debug(
                 f"Running subprocess: `{command}`"
@@ -381,6 +463,18 @@ class BranchDialog(QDialog):
                 dlg.exec()
                 import sys
                 sys.exit(1)
+            # --- Show success dialog and exit with code 0 ---
+            # Refactoring: close the primary dialog before showing success dialog
+            self.accept()
+            sound_file = config.get("success_sound_file", "resources/leeroy.mp3")
+            dlg = SuccessDialog(
+                f"Branch <b>{branch}</b> created and checked out successfully!",
+                parent=None,
+                sound_file=sound_file,
+            )
+            dlg.exec()
+            import sys
+            sys.exit(0)
         except Exception as e:
             logger.error(f"Exception during branch creation: {e}")
             dlg = ErrorDialog(
