@@ -9,8 +9,10 @@ import re
 import tomllib
 from pathlib import Path
 from typing import Any
+
 import platformdirs
 from loguru import logger
+
 
 def find_pyproject_config(start_path: Path) -> dict[str, Any]:
     """

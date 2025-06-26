@@ -4,11 +4,13 @@ Git command helpers for mkgitbranch.
 This module provides functions for interacting with git, such as retrieving the current branch name and parsing branch names for metadata.
 """
 
-from typing import Optional, Any
-import subprocess
 import re
+import subprocess
+from typing import Optional
+
+from PySide6.QtWidgets import QApplication
 from loguru import logger
-from PySide6.QtWidgets import QApplication, QDialog
+
 from .config import load_regexes
 
 __all__ = [

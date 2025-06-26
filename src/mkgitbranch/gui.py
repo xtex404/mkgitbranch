@@ -10,15 +10,12 @@ Example:
 
 
 import argparse
-import getpass
 import os
 import re
 import subprocess
-import tomllib
 from pathlib import Path
-from typing import Optional, Any
+from typing import Any
 
-import platformdirs
 from PySide6.QtCore import Qt, QTimer, QEvent
 from PySide6.QtGui import QClipboard
 from PySide6.QtWidgets import (
@@ -33,8 +30,9 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 from loguru import logger
-from .config import load_config, load_regexes
-from .git_utils import get_current_git_branch, show_git_error_dialog, parse_branch_for_jira_and_type
+
+from mkgitbranch.config import load_config, load_regexes
+from mkgitbranch.git_utils import get_current_git_branch, parse_branch_for_jira_and_type
 
 BRANCH_TYPES: list[str] = ["feat", "fix", "chore", "test", "refactor", "hotfix"]
 
