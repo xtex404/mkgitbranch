@@ -96,7 +96,7 @@ class ErrorDialog(QDialog):
         self,
         message: str,
         exit_code: int,
-        parent: Any = None,
+        parent: Any,
         header_message: str | None = None,
         window_title: str = f"{APPLICATION_NAME} Error",
     ):
@@ -313,7 +313,7 @@ class BranchDialog(QDialog):
         config = load_config()
         template = config.get(
             "branch_create_command_template",
-            'git switch --quiet --create --track inherit "{branch_name}"',
+            'git switch --quiet --track --create "{branch_name}"',
         )
 
         # Sanitize the branch name for shell usage
@@ -345,7 +345,7 @@ class BranchDialog(QDialog):
         # If using shell=True, pass a single string; if shell=False, pass a list
         try:
             logger.debug(
-                f"Running subprocess: {command} with env: {_filtered_env_for_log(self.env)}"
+                f"Running subprocess: `{command}`"
             )
             result = subprocess.run(
                 command_args if not isinstance(command, str) else command,
@@ -425,13 +425,19 @@ class BranchDialog(QDialog):
                     return True
         return super().eventFilter(obj, event)
 
-    def __init__(self, parent: Any = None, env: dict[str, str] | None = None):
+    def __init__(
+        self,
+        parent: Any = None,
+        env: dict[str, str] | None = None,
+        prefill_jira: str | None = None,  # New argument for pre-filling JIRA
+    ):
         """
         Initialize the BranchDialog.
 
         Args:
             parent: Parent widget.
             env: Optional environment variables for subprocesses.
+            prefill_jira: JIRA value to pre-fill, if available.
         """
         super().__init__(parent)
         self.env = env or None
@@ -447,12 +453,15 @@ class BranchDialog(QDialog):
         username = config_username if config_username is not None else get_os_username()
         username_readonly = config.get("username_readonly", False)
 
-        self._setup_fields(username, username_readonly, type_, jira, config)
+        # If prefill_jira is provided, use it (overrides config and branch parse)
+        effective_jira = prefill_jira if prefill_jira is not None else (jira or None)
+
+        self._setup_fields(username, username_readonly, type_, effective_jira, config)
         self._setup_ui(config)
         self._setup_timers(config)
         self.update_preview()
 
-    def _setup_fields(self, username: str, username_readonly: bool, type_: str, jira: str, config: dict[str, Any]) -> None:
+    def _setup_fields(self, username: str, username_readonly: bool, type_: str, jira: str | None, config: dict[str, Any]) -> None:
         """
         Set up the input fields for the dialog.
         """
@@ -463,7 +472,8 @@ class BranchDialog(QDialog):
         self.type_combo.addItems(BRANCH_TYPES)
         self.type_combo.setStyleSheet("padding: 4px 4px 4px 16px;")
         jira_prefix = config.get("jira_prefix", "")
-        jira_value = jira or jira_prefix
+        # Use the provided jira value if available, otherwise fall back to config
+        jira_value = jira if jira is not None else jira_prefix
         self.jira_edit = QLineEdit(jira_value)
         self.jira_edit.setStyleSheet("padding: 4px;")
         self.desc_edit = QLineEdit()
@@ -752,8 +762,28 @@ def run_app() -> None:
         )
         dlg.exec()
         sys.exit(1)
+
+    # --- New logic: pre-fill JIRA from current branch if possible ---
+    from mkgitbranch.git_utils import get_current_git_branch, parse_branch_for_jira_and_type
+    current_branch = get_current_git_branch(env=env)
+    prefill_jira = None
+    if current_branch:
+        # Try to match username/type/jira/description exactly
+        regexes = load_regexes()
+        username_re = regexes["username"]
+        type_re = regexes["type"]
+        jira_re = regexes["jira"]
+        desc_re = regexes["description"]
+        pattern = re.compile(
+            rf"^(?P<username>{username_re.pattern})/(?P<type>{type_re.pattern})/(?P<jira>{jira_re.pattern})/(?P<desc>{desc_re.pattern})$"
+        )
+        m = pattern.match(current_branch)
+        if m:
+            prefill_jira = m.group("jira")
+    # --------------------------------------------------------------
+
     app = QApplication(sys.argv)
-    dlg = BranchDialog(env=env)
+    dlg = BranchDialog(env=env, prefill_jira=prefill_jira)
     result = dlg.exec()
     if result == QDialog.DialogCode.Accepted:
         pass

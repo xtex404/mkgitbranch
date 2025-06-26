@@ -198,7 +198,6 @@ def run_git_create_branch(
                 skip_next = False
                 continue
             if arg == "--track":
-                skip_next = True
                 continue
             new_args.append(arg)
         logger.warning(

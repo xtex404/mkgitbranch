@@ -24,7 +24,7 @@ cursor_start = "description"
 
 # Template for the branch creation command.
 # {branch_name} will be replaced with the generated branch name.
-branch_create_command_template = 'git switch --quiet --create --track inherit "{branch_name}"'
+branch_create_command_template = 'git switch --quiet --create --track "{branch_name}"'
 
 [regex]
 # Regular expression for validating the username field.
