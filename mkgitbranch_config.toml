@@ -10,8 +10,8 @@ branch_create_command_template = 'git switch --quiet --create --track inherit "{
 [regex]
 username = "^[a-zA-Z0-9_-]{2,7}$"  # 2-32 chars, alphanum, dot, dash, underscore
 type = "^(feat|fix|chore|test|refactor|hotfix)$"  # allowed types
-jira = "^[A-Z]{2,6}-[1-9][0-9]+$"  # JIRA issue key, e.g., ABC-123
-description = "^[a-z][a-z0-9-]+$"  # alphanum, hyphen, starts with alpha
+jira = "^[A-Z]{2,6}-[1-9][0-9]{,4}$"  # JIRA issue key, e.g., ABC-123
+description = "^[a-z][a-z0-9-]{,30}$"  # alphanum, hyphen, starts with alpha
 
 [field_widths]
 username = 100
@@ -19,18 +19,15 @@ type = 110
 jira = 90
 description = 250
 
-[theme]
-# Set to true to force dark mode, false for light, or omit for auto-detect (macOS only)
-force_dark_mode = false
-
 [theme.light]
-#error_foreground = "#d32f2f"
-#background = "#ffffff"
-#foreground = "#222222"
-#field_background = "#f7f7f7"
+error_foreground = "#8B0000"
+label_foreground = "#222222"
+#field_background = "#0000dd"
 #field_foreground = "#222222"
 
 [theme.dark]
-#background = "#ff0000"
-error_foreground = "#ffcc00"
-foreground = "#ffffff"
+error_foreground = "#EE4B2B"
+label_foreground = "#cccccc"
+#foreground = "#ffffff"
+field_foreground = "#ffffff"
+#field_background = "#222222"

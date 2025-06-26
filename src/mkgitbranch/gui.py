@@ -8,15 +8,17 @@ Example:
     >>> run_app()
 """
 
+
 import getpass
 import os
 import re
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any
 from loguru import logger
 import argparse
 import tomllib
+import platformdirs
 
 from PySide6.QtWidgets import (
     QApplication,
@@ -29,60 +31,245 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QVBoxLayout,
-    QMessageBox,  # Added for error dialog
+    QMessageBox,
 )
 from PySide6.QtCore import Qt, QUrl, QTimer, QEvent
-from PySide6.QtGui import QClipboard, QDesktopServices, QKeyEvent
+from PySide6.QtGui import QClipboard, QDesktopServices
 
-BRANCH_TYPES = ["feat", "fix", "chore", "test", "refactor", "hotfix"]
+BRANCH_TYPES: list[str] = ["feat", "fix", "chore", "test", "refactor", "hotfix"]
 
-CONFIG_PATH = Path(__file__).parent.parent.parent / "mkgitbranch_config.toml"
+# Update CONFIG_PATH to use expanduser and resolve
+CONFIG_PATH: Path = (Path(__file__).parent.parent.parent / "mkgitbranch_config.toml").expanduser().resolve()
 
+APPLICATION_NAME: str = "mkgitbranch"
 
-def load_config() -> dict:
-    """Load configuration from mkgitbranch_config.toml."""
-    try:
-        with open(CONFIG_PATH, "rb") as f:
-            return tomllib.load(f)
-    except Exception:
-        return {}
+def find_pyproject_config(start_path: Path) -> dict[str, Any]:
+    """
+    Walk backwards from start_path to root, looking for a pyproject.toml file.
+    If found, return the [tool.mkgitbranch] section as a dict, or {} if not found.
+
+    Args:
+        start_path: The directory to start searching from.
+
+    Returns:
+        dict: The [tool.mkgitbranch] config dict, or {} if not found or invalid.
+    """
+    current = start_path.expanduser().resolve()
+    logger.debug(f"Searching for pyproject.toml starting from {current}")
+    for parent in [current] + list(current.parents):
+        pyproject = parent / "pyproject.toml"
+        logger.debug(f"Checking for pyproject.toml at {pyproject}")
+        if pyproject.is_file():
+            logger.debug(f"Found pyproject.toml at {pyproject}")
+            try:
+                with pyproject.open("rb") as f:
+                    data = tomllib.load(f)
+                # Defensive: ensure nested dicts exist
+                tool_section = data.get("tool")
+                if not isinstance(tool_section, dict):
+                    logger.debug(f"No [tool] section in {pyproject}")
+                    continue
+                mkgitbranch_section = tool_section.get("mkgitbranch")
+                if isinstance(mkgitbranch_section, dict):
+                    logger.debug(f"Found [tool.mkgitbranch] section in {pyproject}")
+                    return mkgitbranch_section
+                else:
+                    logger.debug(f"No [tool.mkgitbranch] section in {pyproject}")
+                    return {}
+            except Exception as e:
+                logger.error(f"Failed to read pyproject.toml at {pyproject}: {e}")
+                return {}
+    logger.debug("No pyproject.toml with [tool.mkgitbranch] found in any parent directory")
+    return {}
+
+def find_toml_config(path: Path) -> dict[str, Any]:
+    """
+    Load a TOML config file if it exists.
+
+    Args:
+        path: Path to the TOML file.
+
+    Returns:
+        dict: The config dict, or {} if not found or invalid.
+    """
+    logger.debug(f"Checking for config file at {path}")
+    if path.is_file():
+        logger.debug(f"Found config file at {path}")
+        try:
+            with path.open("rb") as f:
+                config = tomllib.load(f)
+            logger.debug(f"Loaded config from {path}")
+            return config
+        except Exception as e:
+            logger.error(f"Failed to read config at {path}: {e}")
+            return {}
+    logger.debug(f"No config file found at {path}")
+    return {}
+
+def load_config() -> dict[str, Any]:
+    """
+    Load configuration from the first available source:
+    1. pyproject.toml [tool.mkgitbranch] (searching upwards from cwd)
+    2. mkgitbranch.toml in $XDG_CONFIG_HOME/mkgitbranch/
+    3. mkgitbranch.toml in platformdirs.user_config_dir
+    4. .mkgitbranch.toml in the user home directory
+
+    Returns:
+        dict: Configuration dictionary. Empty if file not found or invalid.
+    """
+    logger.debug("Starting configuration loading process")
+
+    # 1. pyproject.toml [tool.mkgitbranch]
+    cwd = Path.cwd()
+    logger.debug(f"Attempting to load config from pyproject.toml [tool.mkgitbranch] starting at {cwd}")
+    pyproject_config = find_pyproject_config(cwd)
+    if pyproject_config:
+        logger.debug("Using configuration from pyproject.toml [tool.mkgitbranch]")
+        return pyproject_config
+
+    # 2. mkgitbranch.toml in $XDG_CONFIG_HOME/mkgitbranch/
+    xdg_config_home = os.environ.get("XDG_CONFIG_HOME")
+    if xdg_config_home:
+        xdg_config_path = Path(xdg_config_home).expanduser().resolve() / "mkgitbranch" / "mkgitbranch.toml"
+        logger.debug(f"Attempting to load config from {xdg_config_path} (XDG_CONFIG_HOME)")
+        config = find_toml_config(xdg_config_path)
+        if config:
+            logger.debug(f"Using configuration from {xdg_config_path}")
+            return config
+
+    # 3. mkgitbranch.toml in platformdirs.user_config_dir
+    config_dir = Path(platformdirs.user_config_dir("mkgitbranch")).expanduser().resolve()
+    config_path = config_dir / "mkgitbranch.toml"
+    logger.debug(f"Attempting to load config from {config_path}")
+    config = find_toml_config(config_path)
+    if config:
+        logger.debug(f"Using configuration from {config_path}")
+        return config
+
+    # 4. .mkgitbranch.toml in user home directory
+    home_config_path = Path.home().expanduser().resolve() / ".mkgitbranch.toml"
+    logger.debug(f"Attempting to load config from {home_config_path}")
+    config = find_toml_config(home_config_path)
+    if config:
+        logger.debug(f"Using configuration from {home_config_path}")
+        return config
+
+    logger.debug("No configuration file found, using empty config")
+    return {}
 
 
 def load_regexes() -> dict[str, re.Pattern]:
-    """Load regex patterns for field validation from mkgitbranch_config.toml."""
+    """
+    Load regex patterns for field validation from mkgitbranch_config.toml.
+
+    Returns:
+        dict: Dictionary of regex patterns for username, type, jira, and description.
+    """
     config = load_config()
     regex_section = config.get("regex", {})
     return {
-        "username": re.compile(regex_section.get("username", r"^[a-zA-Z0-9._-]{2,32}$")),
+        "username": re.compile(regex_section.get("username", r"^[a-zA-Z0-9_-]{2,7}$")),
         "type": re.compile(regex_section.get("type", r"^(feat|fix|chore|test|refactor|hotfix)$")),
-        "jira": re.compile(regex_section.get("jira", r"^[A-Z]{2,6}-[0-9]+$")),
-        "description": re.compile(regex_section.get("description", r"^[a-z][a-z0-9-]+$")),
+        "jira": re.compile(regex_section.get("jira", r"^[A-Z]{2,6}-[1-9][0-9]{,4}$")),
+        "description": re.compile(regex_section.get("description", r"^[a-z][a-z0-9-]{,30}$")),
     }
 
 
-def get_current_git_branch() -> Optional[str]:
-    """Return the current git branch name, or None if not in a git repo."""
+def get_current_git_branch(env: dict[str, str] | None = None) -> Optional[str]:
+    """
+    Return the current git branch name, or None if not in a git repo.
+
+    If an error occurs, display an error dialog and exit with code 1.
+
+    Args:
+        env: Optional environment variables to use for subprocess.
+
+    Returns:
+        str | None: Current branch name, or None if not found.
+
+    Raises:
+        SystemExit: If the branch name is blank, unknown, or an error occurs.
+
+    Examples:
+        >>> get_current_git_branch()
+        'main'
+    """
     try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True, text=True, check=True
+        logger.debug(
+            f"Running subprocess: ['git', 'rev-parse', '--abbrev-ref', 'HEAD'] "
+            f"with env: {_filtered_env_for_log(env)}"
         )
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+        logger.debug(f"subprocess stdout: {result.stdout}")
+        logger.debug(f"subprocess stderr: {result.stderr}")
+        if result.returncode != 0:
+            logger.error(f"git rev-parse failed with return code {result.returncode}, stderr: {result.stderr}")
+            _show_git_error_dialog(
+                result.stderr or result.stdout or "Unknown error",
+                exit_code=1,
+                header_message="Failed to get current git branch"
+            )
         branch = result.stdout.strip()
-        return branch if branch else None
-    except Exception:
+        if not branch or branch.lower() == "unknown":
+            logger.error(f"Current branch is blank or unknown: '{branch}'")
+            _show_git_error_dialog(
+                "Current branch is blank or unknown",
+                exit_code=1,
+                header_message="Failed to get current git branch"
+            )
+        return branch
+    except Exception as exc:
+        logger.error(f"Exception in get_current_git_branch: {exc}")
+        _show_git_error_dialog(
+            str(exc),
+            exit_code=1,
+            header_message="Failed to get current git branch"
+        )
         return None
 
+def _show_git_error_dialog(message: str, exit_code: int = 1, header_message: str = None) -> None:
+    """
+    Show an error dialog for git errors and exit with the given code.
+
+    Args:
+        message: The error message to display.
+        exit_code: The exit code to use when exiting.
+        header_message: Optional header for the dialog.
+    """
+    from PySide6.QtWidgets import QApplication
+    import sys
+    app = QApplication.instance() or QApplication([])
+    dlg = ErrorDialog(
+        message,
+        exit_code=exit_code,
+        parent=None,
+        header_message=header_message,
+    )
+    dlg.exec()
+    sys.exit(exit_code)
 
 def parse_branch_for_jira_and_type(branch: str) -> tuple[Optional[str], Optional[str]]:
-    """Extract JIRA issue and type from a branch name if present."""
-    # Load regexes for JIRA and type from config
+    """
+    Extract JIRA issue and type from a branch name if present.
+
+    Args:
+        branch: Branch name string.
+
+    Returns:
+        tuple: (jira, type) if found, else (None, None).
+    """
     regexes = load_regexes()
     jira = None
     type_ = None
-    # Search for JIRA issue in the branch string
     m = regexes["jira"].search(branch)
     if m:
         jira = m.group(0)
-    # Search for type as a slash-delimited segment
     type_match = re.search(r"/(%s)/" % "|".join([re.escape(t) for t in BRANCH_TYPES]), branch)
     if type_match:
         type_ = type_match.group(1)
@@ -90,44 +277,101 @@ def parse_branch_for_jira_and_type(branch: str) -> tuple[Optional[str], Optional
 
 
 def get_os_username() -> str:
-    """Get the current OS username."""
+    """
+    Get the current OS username.
+
+    Returns:
+        str: Username of the current OS user.
+    """
     return getpass.getuser()
 
 
 def format_branch_name(username: str, type_: str, jira: str, description: str) -> str:
-    """Format the branch name according to the conventional branch spec."""
+    """
+    Format the branch name according to the conventional branch spec.
+
+    Args:
+        username: Username string.
+        type_: Branch type.
+        jira: JIRA issue string.
+        description: Description string.
+
+    Returns:
+        str: Formatted branch name.
+    """
     desc = description.strip().lower().replace(" ", "-")
     return f"{username}/{type_}/{jira}/{desc}"
 
 
 class ErrorDialog(QDialog):
-    """Dialog to display error messages in monospace font with a dismiss button."""
-    def __init__(self, message: str, exit_code: int, parent=None):
+    """
+    Dialog to display error messages in monospace font with a dismiss button.
+
+    Args:
+        message: Error message to display.
+        exit_code: Exit code to use if dialog is closed.
+        parent: Parent widget.
+        header_message: Optional header message.
+        window_title: Window title for the dialog.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        exit_code: int,
+        parent: Any = None,
+        header_message: str | None = None,
+        window_title: str = f"{APPLICATION_NAME} Error",
+    ):
         super().__init__(parent)
-        self.setWindowTitle("Branch Creation Error")
+        self.setWindowTitle(window_title)
         self.setMinimumWidth(500)
         layout = QVBoxLayout()
-        label = QLabel("<b>Branch creation failed:</b>")
-        layout.addWidget(label)
-        error_label = QLabel(f'<pre style="font-family: monospace;">{message}</pre>')
-        error_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+
+        if header_message:
+            header_label = QLabel(
+                f'<div style="text-align:center; font-weight:bold;">{header_message}</div>'
+            )
+            layout.addWidget(header_label)
+
+        error_label = QLabel(f"<div style=\"text-align:center\">{message}</div>")
+        error_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(error_label)
-        btn = QPushButton("Dismiss")
+        # Add vertical spacer for extra space above the button
+        from PySide6.QtWidgets import QSpacerItem, QSizePolicy
+        layout.addSpacerItem(QSpacerItem(0, 13, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed))
+
+        btn = QPushButton("Close")
         btn.clicked.connect(self.accept)
-        layout.addWidget(btn)
+        btn_width = 130
+        btn.setFixedWidth(btn_width)
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch(1)
+        btn_layout.addWidget(btn)
+        layout.addLayout(btn_layout)
         self.setLayout(layout)
         self.exit_code = exit_code
 
 
 class BranchDialog(QDialog):
-    """Main dialog for branch name generation.
+    """
+    Main dialog for branch name generation.
 
     Validates all fields using regexes loaded from regex_config.toml.
     Automatically normalizes JIRA and description fields as the user types.
+
+    Attributes:
+        env: Environment variables for subprocesses.
+        regexes: Regex patterns for validation.
     """
 
-    def on_username_changed(self, text: str):
-        # Only allow alphanumeric, dot, dash, underscore, 2-32 chars
+    def on_username_changed(self, text: str) -> None:
+        """
+        Normalize and validate username field.
+
+        Args:
+            text: Input text from username field.
+        """
         filtered = "".join(c for c in text if c.isalnum() or c in {".", "-", "_"})
         filtered = filtered[:32]
         if filtered != text:
@@ -136,14 +380,24 @@ class BranchDialog(QDialog):
             self.username_edit.setCursorPosition(min(cursor, len(filtered)))
         self.update_preview()
 
-    def on_type_changed(self, text: str):
-        # Only allow valid types from BRANCH_TYPES
+    def on_type_changed(self, text: str) -> None:
+        """
+        Validate type field.
+
+        Args:
+            text: Input text from type combo box.
+        """
         if text not in BRANCH_TYPES:
             self.type_combo.setCurrentText(BRANCH_TYPES[0])
         self.update_preview()
 
-    def on_jira_changed(self, text: str):
-        # Only allow A-Z, 0-9, and dash, and force uppercase
+    def on_jira_changed(self, text: str) -> None:
+        """
+        Normalize and validate JIRA field.
+
+        Args:
+            text: Input text from JIRA field.
+        """
         filtered = "".join(c for c in text.upper() if c.isalnum() or c == "-")
         if filtered != text:
             cursor = self.jira_edit.cursorPosition()
@@ -151,8 +405,13 @@ class BranchDialog(QDialog):
             self.jira_edit.setCursorPosition(min(cursor, len(filtered)))
         self.update_preview()
 
-    def on_desc_changed(self, text: str):
-        # Force lowercase and replace spaces with dashes
+    def on_desc_changed(self, text: str) -> None:
+        """
+        Normalize and validate description field.
+
+        Args:
+            text: Input text from description field.
+        """
         filtered = text.lower().replace(" ", "-")
         filtered = "".join(c for c in filtered if c.isalnum() or c == "-")
         if filtered != text:
@@ -161,253 +420,376 @@ class BranchDialog(QDialog):
             self.desc_edit.setCursorPosition(min(cursor, len(filtered)))
         self.update_preview()
 
-    def _set_field_color(self, widget, valid: bool):
-        """Set the foreground color of a QLineEdit based on validity."""
-        color = self._normal_fg if valid else self._error_fg
+    def _set_field_color(self, widget: QLineEdit, valid: bool) -> None:
+        """
+        Set the foreground color of a QLineEdit based on validity.
+
+        Args:
+            widget: QLineEdit widget.
+            valid: Whether the field is valid.
+        """
+        # Only change the text color, never the background color
+        color = self._field_fg if valid else self._error_fg
         style = widget.styleSheet()
-        # Remove any previous color setting
+        # Remove any previous color setting (but not background)
         style = re.sub(r"color:\s*#[0-9a-fA-F]{3,6};?", "", style)
         widget.setStyleSheet(style + f"color: {color};")
 
-    def update_preview(self):
+    def update_preview(self) -> None:
+        """
+        Update the branch preview label and button states.
+        Show the preview as each component matches its regex, not only when all are valid.
+        """
         username = self.username_edit.text().strip()
         type_ = self.type_combo.currentText().strip()
         jira = self.jira_edit.text().strip().upper()
         desc = self.desc_edit.text().strip().lower().replace(" ", "-")
-        # Debug: log values and regex match results
-        logger.debug(f"username: '{username}', valid: {self.regexes['username'].fullmatch(username)}")
-        logger.debug(f"type: '{type_}', valid: {self.regexes['type'].fullmatch(type_)}")
-        logger.debug(f"jira: '{jira}', valid: {self.regexes['jira'].fullmatch(jira)}")
-        logger.debug(f"description: '{desc}', valid: {self.regexes['description'].fullmatch(desc)}")
+
         valid_username = bool(self.regexes["username"].fullmatch(username))
         valid_type = bool(self.regexes["type"].fullmatch(type_))
         valid_jira = bool(self.regexes["jira"].fullmatch(jira))
         valid_desc = bool(self.regexes["description"].fullmatch(desc))
+
         self._set_field_color(self.username_edit, valid_username)
         self._set_field_color(self.jira_edit, valid_jira)
         self._set_field_color(self.desc_edit, valid_desc)
-        # type_combo is always valid (from list)
-        valid = valid_username and valid_type and valid_jira and valid_desc
-        branch = ""
-        if valid:
-            branch = format_branch_name(username, type_, jira, desc)
-        self.preview_value_label.setText(branch)
-        self.ok_btn.setEnabled(bool(valid))
-        self.copy_btn.setEnabled(bool(valid))
 
-    def copy_to_clipboard(self):
+        # Show preview as soon as a component is valid, using empty string for invalid components
+        preview_username = username if valid_username else ""
+        preview_type = type_ if valid_type else ""
+        preview_jira = jira if valid_jira else ""
+        preview_desc = desc if valid_desc else ""
+
+        # Only add slashes for filled components, avoid trailing slashes
+        preview_parts = [preview_username, preview_type, preview_jira, preview_desc]
+        preview = "/".join([part for part in preview_parts if part])
+
+        self.preview_value_label.setText(preview)
+
+        prev_copy_enabled = self.copy_btn.isEnabled()
+        prev_create_enabled = self.create_btn.isEnabled()
+        all_valid = valid_username and valid_type and valid_jira and valid_desc
+        self.copy_btn.setEnabled(all_valid)
+        self.create_btn.setEnabled(all_valid)
+        # Set default button to the leftmost enabled (create or copy) when first enabled
+        if not prev_create_enabled and self.create_btn.isEnabled():
+            self.create_btn.setDefault(True)
+            self.copy_btn.setDefault(False)
+            self.cancel_btn.setDefault(False)
+        elif not prev_copy_enabled and self.copy_btn.isEnabled():
+            if not self.create_btn.isEnabled():
+                self.copy_btn.setDefault(True)
+                self.copy_btn.setDefault(False)
+                self.cancel_btn.setDefault(False)
+        if not self.copy_btn.isEnabled() and not self.create_btn.isEnabled():
+            self.copy_btn.setDefault(False)
+            self.create_btn.setDefault(False)
+            self.cancel_btn.setDefault(True)
+
+    def copy_to_clipboard(self) -> None:
+        """
+        Copy the branch name to the clipboard.
+        """
         branch = self.preview_value_label.text()
         if branch:
-            QApplication.clipboard().setText(branch, QClipboard.Clipboard)
+            QApplication.clipboard().setText(branch, QClipboard.Mode.Clipboard)
 
-    def setup_field_normalization(self):
+    def setup_field_normalization(self) -> None:
+        """
+        Connect field normalization handlers.
+        """
         self.username_edit.textChanged.connect(self.on_username_changed)
         self.type_combo.currentTextChanged.connect(self.on_type_changed)
         self.jira_edit.textChanged.connect(self.on_jira_changed)
         self.desc_edit.textChanged.connect(self.on_desc_changed)
 
-    def create_branch(self):
+    def create_branch(self) -> None:
+        """
+        Create a new git branch using the formatted branch name.
+
+        After executing the branch creation command, re-check the current git branch.
+        If the branch has not changed to the expected branch, display an error dialog.
+
+        Raises:
+            SystemExit: If the git command fails or the branch is not switched.
+
+        Examples:
+            >>> dlg = BranchDialog()
+            >>> dlg.create_branch()
+        """
         branch = self.preview_value_label.text()
         if not branch:
             return
         config = load_config()
-        template = config.get("branch_create_command_template",
-            'git branch --quiet --create --track inherit "{branch_name}"')
+        template = config.get(
+            "branch_create_command_template",
+            'git branch --quiet --create --track inherit "{branch_name}"',
+        )
         command = template.replace("{branch_name}", branch)
         try:
-            result = subprocess.run(command, shell=True, capture_output=True, text=True)
+            logger.debug(
+                f"Running subprocess: {command} with env: {_filtered_env_for_log(self.env)}"
+            )
+            result = subprocess.run(
+                command,
+                shell=True,
+                capture_output=True,
+                text=True,
+                env=self.env,
+            )
+            logger.debug(f"subprocess stdout: {result.stdout}")
+            logger.debug(f"subprocess stderr: {result.stderr}")
             if result.returncode != 0:
-                dlg = ErrorDialog(result.stderr or result.stdout or "Unknown error", result.returncode, self)
+                logger.error(f"Git command failed with return code {result.returncode}, stderr: {result.stderr}")
+                dlg = ErrorDialog(
+                    result.stderr or result.stdout or "Unknown error",
+                    result.returncode,
+                    self,
+                )
                 dlg.exec()
                 import sys
                 sys.exit(result.returncode)
+            current_branch = get_current_git_branch(env=self.env)
+            logger.debug(f"Current branch after command: {current_branch}")
+            if current_branch != branch:
+                logger.error(
+                    f"Branch switch failed: expected '{branch}', got '{current_branch or 'unknown'}'"
+                )
+                dlg = ErrorDialog(
+                    f"Expected branch '{branch}' but current branch is '{current_branch or 'unknown'}'",
+                    exit_code=1,
+                    parent=self,
+                    header_message="Branch switch failed",
+                )
+                dlg.exec()
+                import sys
+                sys.exit(1)
         except Exception as e:
-            dlg = ErrorDialog(str(e), 1, self)
+            logger.error(f"Exception during branch creation: {e}")
+            dlg = ErrorDialog(
+                str(e),
+                header_message="git returned an error",
+                exit_code=1,
+                parent=self,
+            )
             dlg.exec()
             import sys
             sys.exit(1)
 
-    def eventFilter(self, obj, event):
-        """Custom event filter to handle Tab key in JIRA field for dash jump only if text is selected."""
-        if obj == self.jira_edit and event.type() == QEvent.KeyPress:
-            if event.key() == Qt.Key_Tab:
-                # Only jump to after dash if there is a selection
+    def eventFilter(self, obj: Any, event: QEvent) -> bool:
+        """
+        Custom event filter for JIRA and description field tab/enter handling.
+
+        Args:
+            obj: The object receiving the event.
+            event: The event object.
+
+        Returns:
+            bool: True if event handled, else False.
+        """
+        # Tab in JIRA field: jump after dash if selected
+        if obj == self.jira_edit and event.type() == QEvent.Type.KeyPress:
+            if event.key() == Qt.Key.Key_Tab:
                 if self.jira_edit.hasSelectedText():
                     dash_pos = self.jira_edit.text().find('-')
                     if dash_pos != -1:
                         self.jira_edit.setCursorPosition(dash_pos + 1)
                         self.jira_edit.deselect()
-                        return True  # Event handled
-                # Otherwise, let Tab behave normally (focus next widget)
+                        return True
+        # Tab or Enter in description field: focus/create
+        if obj == self.desc_edit and event.type() == QEvent.Type.KeyPress:
+            if event.key() == Qt.Key.Key_Tab:
+                self.create_btn.setFocus()
+                return True
+            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                if self.create_btn.isEnabled():
+                    self.create_branch()
+                    return True
         return super().eventFilter(obj, event)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: Any = None, env: dict[str, str] | None = None):
+        """
+        Initialize the BranchDialog.
+
+        Args:
+            parent: Parent widget.
+            env: Optional environment variables for subprocesses.
+        """
         super().__init__(parent)
+        self.env = env or None
         self.setWindowTitle("Generate Conventional Git Branch Name")
         self.setMinimumWidth(500)
 
         config = load_config()
         self.regexes = load_regexes()
 
-        # Prefill logic
-        branch = get_current_git_branch() or ""
+        branch = get_current_git_branch(env=self.env) or ""
         jira, type_ = parse_branch_for_jira_and_type(branch)
         config_username = config.get("username", None)
         username = config_username if config_username is not None else get_os_username()
-        # Username field read-only option
         username_readonly = config.get("username_readonly", False)
 
-        # Widgets
         self.username_edit = QLineEdit(username)
         self.username_edit.setReadOnly(bool(username_readonly))
         self.username_edit.setStyleSheet("padding: 4px;")
         self.type_combo = QComboBox()
         self.type_combo.addItems(BRANCH_TYPES)
-        # Add left padding to move text a few pixels to the right in collapsed state
         self.type_combo.setStyleSheet("padding: 4px 4px 4px 16px;")
-        # JIRA prefill option
         jira_prefix = config.get("jira_prefix", "")
         jira_value = jira or jira_prefix
         self.jira_edit = QLineEdit(jira_value)
         self.jira_edit.setStyleSheet("padding: 4px;")
         self.desc_edit = QLineEdit()
         self.desc_edit.setStyleSheet("padding: 4px;")
-        self.copy_btn = QPushButton("Copy to Clipboard")
-        self.ok_btn = QPushButton("OK")
-        self.ok_btn.setDefault(True)
-        self.ok_btn.setEnabled(False)
-        self.create_btn = QPushButton("Create Branch")  # New button
+        self.copy_btn = QPushButton("Copy")
+        self.create_btn = QPushButton("Create")
+        self.cancel_btn = QPushButton("Cancel")
+        self.copy_btn.setEnabled(False)
         self.create_btn.setEnabled(False)
         self.create_btn.clicked.connect(self.create_branch)
+        self.cancel_btn.clicked.connect(self.reject)
+        self.copy_btn.clicked.connect(self.copy_to_clipboard)  # <-- add this line
 
-        # Dialog color theming from config
+        # Set button widths
+        for btn in (self.cancel_btn, self.copy_btn, self.create_btn):
+            btn.setFixedWidth(125)
+
         theme = config.get("theme", {})
         import platform
         is_dark = False
         if "dark_mode" in theme:
             is_dark = bool(theme["dark_mode"])
         else:
-            # Try to auto-detect dark mode (macOS only, fallback to False)
             if platform.system() == "Darwin":
                 try:
                     import subprocess
-                    result = subprocess.run([
-                        "defaults", "read", "-g", "AppleInterfaceStyle"
-                    ], capture_output=True, text=True)
+                    result = subprocess.run(
+                        ["defaults", "read", "-g", "AppleInterfaceStyle"],
+                        capture_output=True,
+                        text=True,
+                    )
                     is_dark = "Dark" in result.stdout
                 except Exception:
-                    is_dark = False
+                    is_dark = True
         palette_key = "dark" if is_dark else "light"
         palette = theme.get(palette_key, {})
-        error_fg = palette.get("error_foreground", "#d32f2f")  # Default: red
-        normal_fg = palette.get("foreground", "#222222")
 
-        # Field-specific colors
-        field_style = ""
-        if "field_background" in palette:
-            field_style += f"background-color: {palette['field_background']};"
-        if "field_foreground" in palette:
-            field_style += f"color: {palette['field_foreground']};"
-        if field_style:
-            self.username_edit.setStyleSheet(self.username_edit.styleSheet() + field_style)
-            self.jira_edit.setStyleSheet(self.jira_edit.styleSheet() + field_style)
-            self.desc_edit.setStyleSheet(self.desc_edit.styleSheet() + field_style)
-            self.type_combo.setStyleSheet(self.type_combo.styleSheet() + field_style)
-        # Store for later use
+        # Set default colors for dark and light mode, invert as requested
+        if is_dark:
+            error_fg = palette.get("error_foreground", "#EE4B2B")
+            label_fg = palette.get("label_foreground", "#cccccc")
+            field_fg = palette.get("field_foreground", "#ffffff")
+        else:
+            error_fg = palette.get("error_foreground", "#ffffff")
+            label_fg = palette.get("label_foreground", "#222222")
+            field_fg = palette.get("field_foreground", "#EE4B2B")
+
         self._error_fg = error_fg
-        self._normal_fg = normal_fg
+        self._field_fg = field_fg  # Store field_foreground for use in _set_field_color
 
-        # Layout: QGridLayout for fields, slashes, and labels
+        # Apply only foreground color, no background color
+        field_style = ""
+        if field_fg:
+            field_style += f"color: {field_fg};"
+
+        # Set style for all field widgets
+        for widget in (self.username_edit, self.jira_edit, self.desc_edit):
+            widget.setStyleSheet(widget.styleSheet() + field_style)
+        self.type_combo.setStyleSheet(self.type_combo.styleSheet() + field_style)
+        if self.type_combo.lineEdit() is not None:
+            self.type_combo.lineEdit().setStyleSheet(self.type_combo.lineEdit().styleSheet() + field_style)
+
         grid = QGridLayout()
         grid.addWidget(self.username_edit, 0, 0)
         slash1 = QLabel("/")
-        slash1.setAlignment(Qt.AlignVCenter | Qt.AlignHCenter)
+        slash1.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignHCenter)
         grid.addWidget(slash1, 0, 1)
         grid.addWidget(self.type_combo, 0, 2)
         slash2 = QLabel("/")
-        slash2.setAlignment(Qt.AlignVCenter | Qt.AlignHCenter)
+        slash2.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignHCenter)
         grid.addWidget(slash2, 0, 3)
         grid.addWidget(self.jira_edit, 0, 4)
         slash3 = QLabel("/")
-        slash3.setAlignment(Qt.AlignVCenter | Qt.AlignHCenter)
+        slash3.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignHCenter)
         grid.addWidget(slash3, 0, 5)
         grid.addWidget(self.desc_edit, 0, 6)
-        # Row 1: labels
         user_label = QLabel("Username")
-        user_label.setAlignment(Qt.AlignHCenter)
+        user_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        user_label.setStyleSheet(f"color: {label_fg};")
         grid.addWidget(user_label, 1, 0)
         grid.addWidget(QLabel(""), 1, 1)
         type_label = QLabel("Type")
-        type_label.setAlignment(Qt.AlignHCenter)
+        type_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        type_label.setStyleSheet(f"color: {label_fg};")
         grid.addWidget(type_label, 1, 2)
         grid.addWidget(QLabel(""), 1, 3)
         jira_label = QLabel("JIRA Issue")
-        jira_label.setAlignment(Qt.AlignHCenter)
+        jira_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        jira_label.setStyleSheet(f"color: {label_fg};")
         grid.addWidget(jira_label, 1, 4)
         grid.addWidget(QLabel(""), 1, 5)
         desc_label = QLabel("Description")
-        desc_label.setAlignment(Qt.AlignHCenter)
+        desc_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        desc_label.setStyleSheet(f"color: {label_fg};")
         grid.addWidget(desc_label, 1, 6)
 
-        # Add web link below the fields, above the buttons
-        link_label = QLabel(
-            '<a href="https://conventional-branch.github.io">Conventional Branch Format Documentation</a>'
-        )
-        link_label.setOpenExternalLinks(False)
-        link_label.setTextInteractionFlags(Qt.TextBrowserInteraction)
-        link_label.setAlignment(Qt.AlignCenter)
-        def open_link():
-            QDesktopServices.openUrl(QUrl("https://conventional-branch.github.io"))
-        link_label.linkActivated.connect(lambda _: open_link())
-
+        # Button layout: right-aligned
         btns = QHBoxLayout()
+        btns.addStretch(1)
+        btns.addWidget(self.cancel_btn)
         btns.addWidget(self.copy_btn)
-        btns.addWidget(self.ok_btn)
-        btns.addWidget(self.create_btn)  # Add new button
+        btns.addWidget(self.create_btn)
 
         layout = QVBoxLayout()
         layout.addLayout(grid)
-        layout.addWidget(link_label)
-        # Only show the preview value (no label)
-        # layout.addWidget(self.preview_label)
-        # Instead, show the preview value directly in a QLabel
+
+        # Add 10px space above preview
+        from PySide6.QtWidgets import QSpacerItem, QSizePolicy
+        layout.addSpacerItem(QSpacerItem(0, 10, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed))
+
+        # Centered, monospace preview label
         self.preview_value_label = QLabel()
-        self.preview_value_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.preview_value_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.preview_value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview_value_label.setStyleSheet(
+            "font-family: Menlo, Monaco, 'Fira Mono', 'Liberation Mono', monospace; font-size: 1.1em;"
+        )
         layout.addWidget(self.preview_value_label)
+
+        # Add 10px space below preview
+        layout.addSpacerItem(QSpacerItem(0, 10, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed))
+
         layout.addLayout(btns)
         self.setLayout(layout)
 
-        # Field-specific widths from config
         field_widths = config.get("field_widths", {})
-        self.username_edit.setFixedWidth(field_widths.get("username", 120))
-        self.type_combo.setFixedWidth(field_widths.get("type", 100))
+        self.username_edit.setFixedWidth(field_widths.get("username", 100))
+        self.type_combo.setFixedWidth(field_widths.get("type", 110))
         self.jira_edit.setFixedWidth(field_widths.get("jira", 90))
-        self.desc_edit.setFixedWidth(field_widths.get("description", 300))
+        self.desc_edit.setFixedWidth(field_widths.get("description", 250))
 
-        # Field normalization
         self.setup_field_normalization()
         self.jira_edit.installEventFilter(self)
+        self.desc_edit.installEventFilter(self)
 
-        # Configurable cursor start options
-        # Options: 'username', 'jira_start', 'jira_after_dash', 'description'
         cursor_start = config.get("cursor_start", "description")
         jira_regex = self.regexes["jira"]
         jira_text = self.jira_edit.text()
-        if cursor_start == 'username':
+        if cursor_start == "username":
             self.username_edit.setFocus()
             self.username_edit.setCursorPosition(0)
-        elif cursor_start == 'jira_start':
+        elif cursor_start == "jira_start":
             self.jira_edit.setFocus()
             self.jira_edit.selectAll()
-        elif cursor_start == 'jira_after_dash':
+        elif cursor_start == "jira_after_dash":
             self.jira_edit.setFocus()
-            dash_pos = self.jira_edit.text().find('-')
+            dash_pos = self.jira_edit.text().find("-")
             if dash_pos != -1:
                 self.jira_edit.setCursorPosition(dash_pos + 1)
             else:
                 self.jira_edit.setCursorPosition(0)
             self.jira_edit.deselect()
-        elif cursor_start == 'description':
+        elif cursor_start == "description":
             if jira_text and jira_regex.fullmatch(jira_text):
                 self.desc_edit.setFocus()
                 self.desc_edit.setCursorPosition(0)
@@ -418,7 +800,6 @@ class BranchDialog(QDialog):
             self.desc_edit.setFocus()
             self.desc_edit.setCursorPosition(0)
 
-        # Timeout: exit if no typing after configurable minutes (default 10 min, 600,000 ms)
         timeout_minutes = config.get("timeout_minutes", 10)
         if timeout_minutes and timeout_minutes > 0:
             self.timeout_timer = QTimer(self)
@@ -426,7 +807,6 @@ class BranchDialog(QDialog):
             self.timeout_timer.setSingleShot(True)
             self.timeout_timer.timeout.connect(self._on_timeout)
             self.timeout_timer.start()
-            # Reset timer on any user input
             self.username_edit.textEdited.connect(self._reset_timeout)
             self.type_combo.currentTextChanged.connect(self._reset_timeout)
             self.jira_edit.textEdited.connect(self._reset_timeout)
@@ -436,29 +816,112 @@ class BranchDialog(QDialog):
 
         self.update_preview()
 
-    def _reset_timeout(self, *args):
+    def _reset_timeout(self, *args) -> None:
+        """
+        Reset the inactivity timeout timer.
+        """
         self.timeout_timer.start()
 
-    def _on_timeout(self):
+    def _on_timeout(self) -> None:
+        """
+        Handle inactivity timeout.
+        """
         logger.error("No input for 10 minutes, exiting with code 1")
         import sys
         sys.exit(1)
 
 
+def _filtered_env_for_log(env: dict[str, str] | None) -> dict[str, str]:
+    """
+    Return a filtered copy of the environment containing only PATH and variables starting with GIT_.
+
+    Args:
+        env: The environment dictionary.
+
+    Returns:
+        dict: Filtered environment dictionary.
+    """
+    if not env:
+        return {}
+    return {k: v for k, v in env.items() if k == "PATH" or k.startswith("GIT_")}
+
+
 def run_app() -> None:
-    """Run the mkgitbranch GUI application."""
+    """
+    Run the mkgitbranch GUI application.
+
+    Raises:
+        SystemExit: If the directory is invalid or not a git repo.
+
+    Examples:
+        >>> run_app()
+    """
     import sys
+    import pathlib
 
     parser = argparse.ArgumentParser(description="Generate a conventional git branch name.")
+    parser.add_argument(
+        "directory",
+        nargs="?",
+        default=None,
+        help="Optional working directory for git operations",
+    )
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
-    args, unknown = parser.parse_known_args()
+    args = parser.parse_args()
     if args.debug:
         logger.remove()
         logger.add(sys.stderr, level="DEBUG")
     else:
         logger.remove()
         logger.add(sys.stderr, level="INFO")
+    env = os.environ.copy()
+    work_tree = None
+    if args.directory:
+        dir_path = Path(args.directory).expanduser().resolve()
+        if dir_path.is_dir():
+            env["GIT_WORK_TREE"] = str(dir_path)
+            work_tree = str(dir_path)
+            os.chdir(dir_path)
+        else:
+            logger.error(f"Provided directory is not valid: {args.directory}")
+            app = QApplication(sys.argv)
+            dlg = ErrorDialog(
+                f'<span style="text-align:center;font-family:Menlo,Monaco,monospace;font-size:0.8em">{args.directory}</span> is not a directory!',
+                parent=None,
+                exit_code=1,
+            )
+            dlg.exec()
+            sys.exit(1)
+    try:
+        logger.debug(
+            f"Running subprocess: ['git', 'rev-parse', '--is-inside-work-tree'] "
+            f"with env: {_filtered_env_for_log(env)}"
+        )
+        result = subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            capture_output=True,
+            text=True,
+            check=True,
+            env=env,
+        )
+        logger.debug(f"subprocess stdout: {result.stdout}")
+        logger.debug(f"subprocess stderr: {result.stderr}")
+        if result.stdout.strip() != "true":
+            raise Exception()
+    except Exception:
+        logger.error(f"Directory is not a valid git repo: {args.directory}")
+        app = QApplication(sys.argv)
+        dlg = ErrorDialog(
+            f'<span style="text-align:center;font-family:Menlo,Monaco,monospace;font-size:0.8em;">{args.directory}</span> is not a valid git repo!',
+            parent=None,
+            exit_code=1,
+        )
+        dlg.exec()
+        sys.exit(1)
     app = QApplication(sys.argv)
-    dlg = BranchDialog()
-    if dlg.exec() == QDialog.Accepted:
-        pass  # Optionally, do something with the branch name
+    dlg = BranchDialog(env=env)
+    result = dlg.exec()
+    if result == QDialog.DialogCode.Accepted:
+        pass
+    else:
+        sys.exit(100)
