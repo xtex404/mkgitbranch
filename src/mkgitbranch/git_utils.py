@@ -118,3 +118,42 @@ def parse_branch_for_jira_and_type(branch: str) -> tuple[Optional[str], Optional
     if type_match:
         type_ = type_match.group(1)
     return jira, type_
+
+def is_branch_tracked_by_remote(branch: str, env: dict[str, str] | None = None) -> bool:
+    """
+    Determine if the given branch is tracked by a remote server.
+
+    Args:
+        branch: The name of the branch to check.
+        env: Optional environment variables for subprocess.
+
+    Returns:
+        bool: True if the branch is tracked by a remote, False otherwise.
+
+    Raises:
+        RuntimeError: If the git command fails unexpectedly.
+
+    Examples:
+        >>> is_branch_tracked_by_remote('main')
+        True
+    """
+    try:
+        logger.debug(f"Running subprocess: ['git', 'rev-parse', '--abbrev-ref', '{branch}@{{upstream}}'] with env: {env}")
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", f"{branch}@{{upstream}}"],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+        logger.debug(f"subprocess stdout: {result.stdout}")
+        logger.debug(f"subprocess stderr: {result.stderr}")
+        logger.debug(f"subprocess returncode: {result.returncode}")
+        if result.returncode == 0 and result.stdout.strip():
+            logger.debug(f"Branch '{branch}' is tracked by a remote")
+            return True
+        logger.debug(f"Branch '{branch}' is NOT tracked by a remote")
+        return False
+    except Exception as exc:
+        logger.error(f"Failed to check if branch '{branch}' is tracked by a remote: {exc}")
+        raise RuntimeError(f"Failed to check if branch '{branch}' is tracked by a remote: {exc}")

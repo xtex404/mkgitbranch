@@ -300,7 +300,7 @@ class BranchDialog(QDialog):
         config = load_config()
         template = config.get(
             "branch_create_command_template",
-            'git branch --quiet --create --track inherit "{branch_name}"',
+            'git branch --quiet --create "{branch_name}"',
         )
         command = template.replace("{branch_name}", branch)
         try:
@@ -616,6 +616,17 @@ def _filtered_env_for_log(env: dict[str, str] | None) -> dict[str, str]:
     if not env:
         return {}
     return {k: v for k, v in env.items() if k == "PATH" or k.startswith("GIT_")}
+
+
+def get_os_username() -> str:
+    """
+    Get the current OS username.
+
+    Returns:
+        str: Username of the current OS user.
+    """
+    import getpass
+    return getpass.getuser()
 
 
 def run_app() -> None:
