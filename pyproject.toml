@@ -39,15 +39,6 @@ dependencies = [
 [project.scripts]
 mkgitbranch = "mkgitbranch.gui:run_app"
 
-[tool.hatch.build.hooks.pyinstaller]
-# PyInstaller hook for building standalone executables
-add-data = [
-    "mkgitbranch_config.sample.toml:.",
-]
-entry-points = [
-    "mkgitbranch = mkgitbranch.gui:run_app",
-]
-
 [tool.hatch.envs.pyinstaller]
 dependencies = ["pyinstaller>=6.0.0"]
 

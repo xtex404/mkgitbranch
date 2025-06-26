@@ -146,7 +146,7 @@ mkgitbranch can be packaged as a standalone executable for macOS and Windows usi
 
 3. Build the standalone executable:
    ```sh
-   hatch run pyinstaller:pyinstaller --onefile --windowed --name mkgitbranch src/mkgitbranch/gui.py
+   pyinstaller --onefile --windowed --name mkgitbranch src/mkgitbranch/gui.py
    ```
    - The output executable will be in the `dist/` directory.
    - For CLI-only builds, remove `--windowed`.
@@ -154,16 +154,16 @@ mkgitbranch can be packaged as a standalone executable for macOS and Windows usi
 4. (Optional) Build for a specific platform:
    - On Windows:
      ```sh
-     hatch run windows:pyinstaller --onefile --windowed --name mkgitbranch src/mkgitbranch/gui.py
+     pyinstaller --onefile --windowed --name mkgitbranch src/mkgitbranch/gui.py
      ```
    - On macOS:
      ```sh
-     hatch run macos:pyinstaller --onefile --windowed --name mkgitbranch src/mkgitbranch/gui.py
+     pyinstaller --onefile --windowed --name mkgitbranch src/mkgitbranch/gui.py
      ```
 
 ### Notes
 - The generated executable is self-contained and does not require Python to be installed on the target system.
-- You may need to adjust the `add-data` option in `pyproject.toml` to include additional resources.
+- You may need to adjust the `--add-data` option for PyInstaller to include additional resources (see the PyInstaller docs).
 - For advanced PyInstaller configuration, see the [PyInstaller documentation](https://pyinstaller.org/).
 
 ---
