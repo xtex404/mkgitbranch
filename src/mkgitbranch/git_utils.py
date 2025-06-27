@@ -23,6 +23,7 @@ __all__ = [
     "run_git_checkout_branch",
 ]
 
+
 def get_current_git_branch(env: dict[str, str] | None = None) -> Optional[str]:
     """
     Return the current git branch name, or None if not in a git repo.
@@ -43,44 +44,33 @@ def get_current_git_branch(env: dict[str, str] | None = None) -> Optional[str]:
         'main'
     """
     try:
-        logger.debug(
-            "Running subprocess: ['git', 'rev-parse', '--abbrev-ref', 'HEAD']"
-        )
+        logger.debug("Running subprocess: ['git', 'rev-parse', '--abbrev-ref', 'HEAD']")
         result = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
             capture_output=True,
             text=True,
-            check=False,
             env=env,
         )
-        logger.debug(f"subprocess stdout: {result.stdout}")
-        logger.debug(f"subprocess stderr: {result.stderr}")
         if result.returncode != 0:
-            logger.error(f"git rev-parse failed with return code {result.returncode}, stderr: {result.stderr}")
-            show_git_error_dialog(
-                result.stderr or result.stdout or "Unknown error",
-                exit_code=1,
-                header_message="Failed to get current git branch"
+            logger.error(
+                f"Git command failed with return code {result.returncode}, stderr: {result.stderr}"
             )
-        branch = result.stdout.strip()
-        if not branch or branch.lower() == "unknown":
-            logger.error(f"Current branch is blank or unknown: '{branch}'")
-            show_git_error_dialog(
-                "Current branch is blank or unknown",
-                exit_code=1,
-                header_message="Failed to get current git branch"
-            )
-        return branch
-    except Exception as exc:
-        logger.error(f"Exception in get_current_git_branch: {exc}")
-        show_git_error_dialog(
-            str(exc),
-            exit_code=1,
-            header_message="Failed to get current git branch"
-        )
-        return None
+            return None
+        return result.stdout.strip()
+    except FileNotFoundError as e:
+        logger.exception("Git executable not found")
+        raise
+    except subprocess.SubprocessError as e:
+        logger.exception("Subprocess error occurred while running git command")
+        raise
+    except Exception as e:
+        logger.exception("Unexpected error occurred while running git command")
+        raise
 
-def show_git_error_dialog(message: str, exit_code: int = 1, header_message: str = None) -> None:
+
+def show_git_error_dialog(
+    message: str, exit_code: int = 1, header_message: str = None
+) -> None:
     """
     Show an error dialog for git errors and exit with the given code.
 
@@ -90,6 +80,8 @@ def show_git_error_dialog(message: str, exit_code: int = 1, header_message: str 
         header_message: Optional header for the dialog.
     """
     from .gui import ErrorDialog
+
+    logger.error(f"Showing git error dialog: {header_message or ''} - {message}")
     dlg = ErrorDialog(
         message,
         exit_code=exit_code,
@@ -98,6 +90,7 @@ def show_git_error_dialog(message: str, exit_code: int = 1, header_message: str 
     )
     dlg.exec()
     sys.exit(exit_code)
+
 
 def parse_branch_for_jira_and_type(branch: str) -> tuple[Optional[str], Optional[str]]:
     """
@@ -109,17 +102,22 @@ def parse_branch_for_jira_and_type(branch: str) -> tuple[Optional[str], Optional
     Returns:
         tuple: (jira, type) if found, else (None, None).
     """
-    regexes = load_regexes()
-    jira = None
-    type_ = None
-    m = regexes["jira"].search(branch)
-    if m:
-        jira = m.group(0)
-    # The list of types should be kept in sync with config.BRANCH_TYPES or passed in
-    type_match = re.search(r"/(feat|fix|chore|test|refactor|hotfix)/", branch)
-    if type_match:
-        type_ = type_match.group(1)
-    return jira, type_
+    try:
+        regexes = load_regexes()
+        jira = None
+        type_ = None
+        m = regexes["jira"].search(branch)
+        if m:
+            jira = m.group(0)
+        # The list of types should be kept in sync with config.BRANCH_TYPES or passed in
+        type_match = re.search(r"/(feat|fix|chore|test|refactor|hotfix)/", branch)
+        if type_match:
+            type_ = type_match.group(1)
+        return jira, type_
+    except Exception as exc:
+        logger.exception("Exception in parse_branch_for_jira_and_type")
+        return None, None
+
 
 def is_branch_tracked_by_remote(branch: str, env: dict[str, str] | None = None) -> bool:
     """
@@ -140,7 +138,9 @@ def is_branch_tracked_by_remote(branch: str, env: dict[str, str] | None = None) 
         True
     """
     try:
-        logger.debug(f"Running subprocess: ['git', 'rev-parse', '--abbrev-ref', '{branch}@{{upstream}}'] with env: {env}")
+        logger.debug(
+            f"Running subprocess: ['git', 'rev-parse', '--abbrev-ref', '{branch}@{{upstream}}']"
+        )
         result = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", f"{branch}@{{upstream}}"],
             capture_output=True,
@@ -151,14 +151,18 @@ def is_branch_tracked_by_remote(branch: str, env: dict[str, str] | None = None) 
         logger.debug(f"subprocess stdout: {result.stdout}")
         logger.debug(f"subprocess stderr: {result.stderr}")
         logger.debug(f"subprocess returncode: {result.returncode}")
-        if result.returncode == 0 and result.stdout.strip():
-            logger.debug(f"Branch '{branch}' is tracked by a remote")
-            return True
-        logger.debug(f"Branch '{branch}' is NOT tracked by a remote")
-        return False
+        if result.returncode != 0:
+            logger.warning(
+                f"Branch '{branch}' is not tracked by a remote (return code {result.returncode})"
+            )
+            return False
+        return True
     except Exception as exc:
-        logger.error(f"Failed to check if branch '{branch}' is tracked by a remote: {exc}")
-        raise RuntimeError(f"Failed to check if branch '{branch}' is tracked by a remote: {exc}")
+        logger.exception(
+            f"Exception in is_branch_tracked_by_remote for branch '{branch}'"
+        )
+        return False
+
 
 def run_git_create_branch(
     branch: str,
@@ -206,9 +210,7 @@ def run_git_create_branch(
         command = shlex.join(command_args)
         used_git_branch = True
 
-    logger.debug(
-        f"Running subprocess: {command} with env: {{k: v for k, v in (env or {{}}).items() if k == 'PATH' or k.startswith('GIT_')}}"
-    )
+    logger.debug(f"Running subprocess: {command}")
     result = subprocess.run(
         command_args,
         shell=False,
@@ -219,8 +221,11 @@ def run_git_create_branch(
     logger.debug(f"subprocess stdout: {result.stdout}")
     logger.debug(f"subprocess stderr: {result.stderr}")
     if result.returncode != 0:
-        logger.error(f"Git command failed with return code {result.returncode}, stderr: {result.stderr}")
+        logger.error(
+            f"Git command failed with return code {result.returncode}, stderr: {result.stderr}"
+        )
         from .gui import ErrorDialog
+
         dlg = ErrorDialog(
             result.stderr or result.stdout or "Unknown error",
             result.returncode,
@@ -228,8 +233,10 @@ def run_git_create_branch(
         )
         dlg.exec()
         import sys
+
         sys.exit(result.returncode)
     return used_git_branch
+
 
 def run_git_checkout_branch(
     branch: str,
@@ -248,10 +255,10 @@ def run_git_checkout_branch(
         SystemExit: If the checkout fails.
     """
     cmd = ["git", "checkout", branch]
-    logger.warning(f"Running 'git checkout {branch}' to switch to the new branch after 'git branch'")
-    logger.debug(
-        f"Running subprocess: {shlex.join(cmd)} with env: {{k: v for k, v in (env or {{}}).items() if k == 'PATH' or k.startswith('GIT_')}}"
+    logger.warning(
+        f"Running 'git checkout {branch}' to switch to the new branch after 'git branch'"
     )
+    logger.debug(f"Running subprocess: {shlex.join(cmd)}")
     result = subprocess.run(
         cmd,
         capture_output=True,
@@ -261,8 +268,11 @@ def run_git_checkout_branch(
     logger.debug(f"subprocess stdout: {result.stdout}")
     logger.debug(f"subprocess stderr: {result.stderr}")
     if result.returncode != 0:
-        logger.error(f"Git checkout failed with return code {result.returncode}, stderr: {result.stderr}")
+        logger.error(
+            f"Git checkout failed with return code {result.returncode}, stderr: {result.stderr}"
+        )
         from .gui import ErrorDialog
+
         dlg = ErrorDialog(
             result.stderr or result.stdout or "Unknown error",
             result.returncode,
@@ -271,4 +281,5 @@ def run_git_checkout_branch(
         )
         dlg.exec()
         import sys
+
         sys.exit(result.returncode)
