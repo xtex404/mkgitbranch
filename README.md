@@ -118,6 +118,7 @@ cursor_start = "description"
 branch_create_command_template = 'git switch --quiet --track --create "{branch_name}"'
 allow_dirty = false
 forbidden_source_branches = ["^master$"]
+branch_types = ["feat", "fix", "chore", "test", "refactor", "hotfix"]
 
 [regex]
 username = "^[a-zA-Z0-9_-]{2,7}$"
@@ -153,6 +154,7 @@ cursor_start = "description"
 branch_create_command_template = 'git switch --quiet --track --create "{branch_name}"'
 allow_dirty = false
 forbidden_source_branches = ["^master$"]
+branch_types = ["feat", "fix", "chore", "test", "refactor", "hotfix"]
 
 [tool.mkgitbranch.regex]
 username = "^[a-zA-Z0-9_-]{2,7}$"
@@ -166,30 +168,31 @@ description = "^[a-z][a-z0-9-]{,30}$"
 Below is a comprehensive list of all configuration parameters supported by mkgitbranch, their types, descriptions, and default values. These can be set in a standalone
 `mkgitbranch_config.toml` or in the `[tool.mkgitbranch]` section of your `pyproject.toml`.
 
-| Option                         | Type   | Default                                               | Description                                                                        |
-|--------------------------------|--------|-------------------------------------------------------|------------------------------------------------------------------------------------|
-| username                       | string | (OS username)                                         | Username to use as branch prefix.                                                  |
-| username_readonly              | bool   | false                                                 | If true, username field is read-only in the GUI.                                   |
-| jira_prefix                    | string | ""                                                    | Optional prefix to pre-fill in the JIRA field.                                     |
-| timeout_minutes                | int    | 10                                                    | Minutes before the GUI auto-exits due to inactivity.                               |
-| cursor_start                   | string | "description"                                         | Field to focus when dialog opens. See valid values below.                          |
-| branch_create_command_template | string | 'git switch --quiet --track --create "{branch_name}"' | Template for the branch creation command. `{branch_name}` will be replaced.        |
-| allow_dirty                    | bool   | false                                                 | If true, allows branch creation with uncommitted changes.                          |
-| forbidden_source_branches      | list   | []                                                    | Regex patterns; if current branch matches, new branches cannot be created from it. |
-| [regex] username               | string | ^[a-zA-Z0-9\_-]{2,7}$                                 | Regex for validating the username field.                                           |
-| [regex] type                   | string | ^(feat                                                | fix                                                                                |
-| [regex] jira                   | string | ^[A-Z]{2,6}-[1-9][0-9]{,4}$                           | Regex for JIRA issue keys.                                                         |
-| [regex] description            | string | ^[a-z][a-z0-9-]{,30}$                                 | Regex for the description field.                                                   |
-| [field_widths] username        | int    | 100                                                   | Width (in pixels) for the username field.                                          |
-| [field_widths] type            | int    | 110                                                   | Width (in pixels) for the type dropdown.                                           |
-| [field_widths] jira            | int    | 90                                                    | Width (in pixels) for the JIRA field.                                              |
-| [field_widths] description     | int    | 250                                                   | Width (in pixels) for the description field.                                       |
-| [theme.light] error_foreground | string | #8B0000                                               | Foreground color for error messages in light mode.                                 |
-| [theme.light] label_foreground | string | #222222                                               | Foreground color for labels in light mode.                                         |
-| [theme.dark] error_foreground  | string | #EE4B2B                                               | Foreground color for error messages in dark mode.                                  |
-| [theme.dark] label_foreground  | string | #cccccc                                               | Foreground color for labels in dark mode.                                          |
-| [theme.dark] field_foreground  | string | #ffffff                                               | Foreground color for input fields in dark mode.                                    |
-| word_list_path                 | string | (resources/words.txt)                                 | Path to a custom word list for the Ctrl+R easter egg (Cmd-R on macOS).             |
+| Option                         | Type   | Default                                                | Description                                                                        |
+|--------------------------------|--------|--------------------------------------------------------|------------------------------------------------------------------------------------|
+| branch_types                   | list   | ["feat", "fix", "chore", "test", "refactor", "hotfix"] | List of branch types to choose from in the GUI.                                    |
+| username                       | string | (OS username)                                          | Username to use as branch prefix.                                                  |
+| username_readonly              | bool   | false                                                  | If true, username field is read-only in the GUI.                                   |
+| jira_prefix                    | string | ""                                                     | Optional prefix to pre-fill in the JIRA field.                                     |
+| timeout_minutes                | int    | 10                                                     | Minutes before the GUI auto-exits due to inactivity.                               |
+| cursor_start                   | string | "description"                                          | Field to focus when dialog opens. See valid values below.                          |
+| branch_create_command_template | string | 'git switch --quiet --track --create "{branch_name}"'  | Template for the branch creation command. `{branch_name}` will be replaced.        |
+| allow_dirty                    | bool   | false                                                  | If true, allows branch creation with uncommitted changes.                          |
+| forbidden_source_branches      | list   | []                                                     | Regex patterns; if current branch matches, new branches cannot be created from it. |
+| [regex] username               | string | ^[a-zA-Z0-9\_-]{2,7}$                                  | Regex for validating the username field.                                           |
+| [regex] type                   | string | ^(feat                                                 | fix                                                                                |
+| [regex] jira                   | string | ^[A-Z]{2,6}-[1-9][0-9]{,4}$                            | Regex for JIRA issue keys.                                                         |
+| [regex] description            | string | ^[a-z][a-z0-9-]{,30}$                                  | Regex for the description field.                                                   |
+| [field_widths] username        | int    | 100                                                    | Width (in pixels) for the username field.                                          |
+| [field_widths] type            | int    | 110                                                    | Width (in pixels) for the type dropdown.                                           |
+| [field_widths] jira            | int    | 90                                                     | Width (in pixels) for the JIRA field.                                              |
+| [field_widths] description     | int    | 250                                                    | Width (in pixels) for the description field.                                       |
+| [theme.light] error_foreground | string | #8B0000                                                | Foreground color for error messages in light mode.                                 |
+| [theme.light] label_foreground | string | #222222                                                | Foreground color for labels in light mode.                                         |
+| [theme.dark] error_foreground  | string | #EE4B2B                                                | Foreground color for error messages in dark mode.                                  |
+| [theme.dark] label_foreground  | string | #cccccc                                                | Foreground color for labels in dark mode.                                          |
+| [theme.dark] field_foreground  | string | #ffffff                                                | Foreground color for input fields in dark mode.                                    |
+| word_list_path                 | string | (resources/words.txt)                                  | Path to a custom word list for the Ctrl+R easter egg (Cmd-R on macOS).             |
 
 **Valid values for `cursor_start`:**
 
