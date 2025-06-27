@@ -9,15 +9,15 @@ Example:
 """
 
 import argparse
-import sys
 import os
+import random
 import re
 import subprocess
-import random
+import sys
 from pathlib import Path
 from typing import Any, Optional
 
-from PySide6.QtCore import QUrl, Qt, QTimer, QEvent
+from PySide6.QtCore import QUrl, Qt, QTimer, QEvent, Signal, QObject, QThread
 from PySide6.QtGui import QClipboard
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PySide6.QtWidgets import (
@@ -37,29 +37,55 @@ from platformdirs import user_log_dir
 from mkgitbranch.config import load_config, load_regexes
 from mkgitbranch.git_utils import get_current_git_branch, parse_branch_for_jira_and_type
 
-BRANCH_TYPES: list[str] = ["feat", "fix", "chore", "test", "refactor", "hotfix"]
-
 APPLICATION_NAME: str = "mkgitbranch"
 
 
-def _show_git_error_dialog(message: str, exit_code: int = 1, header_message: str = None) -> None:
+class GitErrorDialogException(Exception):
     """
-    Show an error dialog for git errors and exit with the given code.
+    Exception raised after showing a git error dialog.
+
+    Attributes:
+        message: The error message displayed.
+        exit_code: The exit code intended for the application.
+    """
+
+    def __init__(self, message: str, exit_code: int = 1):
+        super().__init__(message)
+        self.exit_code = exit_code
+
+    def __str__(self) -> str:
+        return f"GitErrorDialogException: {self.args[0]} (Exit code: {self.exit_code})"
+
+
+def show_git_error_dialog(
+    message: str, exit_code: int = 1, header_message: str = None
+) -> None:
+    """
+    Show an error dialog for git errors and raise a custom exception with the given code.
 
     Args:
         message: The error message to display.
         exit_code: The exit code to use when exiting.
         header_message: Optional header for the dialog.
+
+    Raises:
+        GitErrorDialogException: Always raised after dialog is shown.
     """
-    import sys
-    dlg = ErrorDialog(
-        message,
-        exit_code=exit_code,
-        parent=None,
-        header_message=header_message,
-    )
-    dlg.exec()
-    sys.exit(exit_code)
+    try:
+        logger.error(f"Showing git error dialog: {header_message or ''} - {message}")
+        dlg = ErrorDialog(
+            message,
+            exit_code=exit_code,
+            parent=None,
+            header_message=header_message,
+        )
+        dlg.exec()
+    except RuntimeError as exc:
+        logger.exception("Runtime error while showing git error dialog")
+        raise GitErrorDialogException(message, exit_code) from exc
+    except Exception as exc:
+        logger.exception("Unexpected error while showing git error dialog")
+        raise GitErrorDialogException(message, exit_code) from exc
 
 
 def format_branch_name(username: str, type_: str, jira: str, description: str) -> str:
@@ -113,13 +139,18 @@ class ErrorDialog(QDialog):
             layout.addWidget(header_label)
 
         # --- Error message ---
-        error_label = QLabel(f"<div style=\"text-align:center\">{message}</div>")
-        error_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        error_label = QLabel(f'<div style="text-align:center">{message}</div>')
+        error_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
         layout.addWidget(error_label)
 
         # --- Spacer for visual separation ---
         from PySide6.QtWidgets import QSpacerItem, QSizePolicy
-        layout.addSpacerItem(QSpacerItem(0, 13, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed))
+
+        layout.addSpacerItem(
+            QSpacerItem(0, 13, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+        )
 
         # --- Close button setup ---
         btn = QPushButton("Close")
@@ -163,12 +194,17 @@ class SuccessDialog(QDialog):
 
         # --- Success message ---
         success_label = QLabel(message)
-        success_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        success_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
         layout.addWidget(success_label)
 
         # --- Spacer for visual separation ---
         from PySide6.QtWidgets import QSpacerItem, QSizePolicy
-        layout.addSpacerItem(QSpacerItem(0, 13, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed))
+
+        layout.addSpacerItem(
+            QSpacerItem(0, 13, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+        )
 
         # --- OK button setup ---
         self.ok_btn = QPushButton("OK")
@@ -192,13 +228,17 @@ class SuccessDialog(QDialog):
 
         Args:
             sound_file: Path to the sound file.
+
+        Raises:
+            FileNotFoundError: If the sound file cannot be found.
+            RuntimeError: If there is an issue with the media player.
         """
         from pathlib import Path
 
         logger.debug(f"_play_sound called with: {sound_file}")
 
         # --- Try to resolve the sound file path in several ways ---
-        resolved_path: Path | None = None
+        resolved_path: Path | None = None  # noqa
 
         # Try as given, with expanduser and resolve
         candidate = Path(sound_file).expanduser().resolve()
@@ -212,7 +252,9 @@ class SuccessDialog(QDialog):
             logger.debug(f"Trying package-relative path: {candidate_pkg}")
             if candidate_pkg.is_file():
                 resolved_path = candidate_pkg
-                logger.debug(f"Sound file found at package-relative path: {resolved_path}")
+                logger.debug(
+                    f"Sound file found at package-relative path: {resolved_path}"
+                )
             else:
                 # Try relative to project root (one level up from src/mkgitbranch)
                 project_root = gui_dir.parent.parent
@@ -220,7 +262,9 @@ class SuccessDialog(QDialog):
                 logger.debug(f"Trying project-root-relative path: {candidate_root}")
                 if candidate_root.is_file():
                     resolved_path = candidate_root
-                    logger.debug(f"Sound file found at project-root-relative path: {resolved_path}")
+                    logger.debug(
+                        f"Sound file found at project-root-relative path: {resolved_path}"
+                    )
                 else:
                     logger.debug(
                         f"Sound file does not exist: {sound_file} "
@@ -237,6 +281,7 @@ class SuccessDialog(QDialog):
             # Connect to mediaStatusChanged to play as soon as loaded
             def on_media_status_changed(status):
                 from PySide6.QtMultimedia import QMediaPlayer
+
                 logger.debug(f"QMediaPlayer mediaStatusChanged: {status}")
                 if status == QMediaPlayer.MediaStatus.LoadedMedia:
                     logger.debug("Media loaded, calling play()")
@@ -249,16 +294,113 @@ class SuccessDialog(QDialog):
             self._player.setSource(QUrl.fromLocalFile(str(resolved_path)))
             # If already loaded, play immediately (for cached files)
             from PySide6.QtMultimedia import QMediaPlayer as QMP
+
             if self._player.mediaStatus() == QMP.MediaStatus.LoadedMedia:
                 logger.debug("Media already loaded, calling play() immediately")
                 self._player.play()
+        except FileNotFoundError as exc:
+            logger.exception(f"Sound file not found: {sound_file}")
+            raise
+        except RuntimeError as exc:
+            logger.exception(
+                f"Media player error while playing sound file: {sound_file}"
+            )
+            raise
         except Exception as exc:
-            logger.error(f"Exception while trying to play sound file '{sound_file}': {exc}")
+            logger.exception(f"Unexpected error while playing sound file: {sound_file}")
+            raise
 
     def _on_ok(self) -> None:
         """Gracefully exit the application on OK or timeout."""
         self.accept()
         QApplication.quit()
+
+
+class BranchCreationWorker(QObject):
+    """
+    Worker object to run git branch creation in a background thread.
+    Emits signals for success or error.
+    """
+
+    finished = Signal(bool, str, int, str)  # (success, message, exit_code, branch_name)
+
+    def __init__(
+        self,
+        branch: str,
+        config: dict[str, Any],
+        env: dict[str, str] | None,
+        parent: Any = None,
+    ):
+        super().__init__(parent)
+        self.branch = branch
+        self.config = config
+        self.env = env
+
+    def run(self):
+        import shlex
+
+        branch = self.branch
+        config = self.config
+        env = self.env
+        template = config.get(
+            "branch_create_command_template",
+            'git switch --quiet --track --create "{branch_name}"',
+        )
+        safe_branch = shlex.quote(branch)
+        command = template.replace("{branch_name}", safe_branch)
+        command_args = shlex.split(command)
+        # Remove '--track' for 'git branch' command
+        if len(command_args) > 1 and command_args[1] == "branch":
+            new_args = []
+            skip_next = False
+            for i, arg in enumerate(command_args):
+                if skip_next:
+                    skip_next = False
+                    continue
+                if arg == "--track":
+                    skip_next = True
+                    continue
+                new_args.append(arg)
+            command_args = new_args
+            command = shlex.join(command_args)
+        try:
+            logger.debug(f"[Thread] Running subprocess: `{command}`")
+            result = subprocess.run(
+                command_args if not isinstance(command, str) else command,
+                shell=isinstance(command, str),
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            logger.debug(f"[Thread] subprocess stdout: {result.stdout}")
+            logger.debug(f"[Thread] subprocess stderr: {result.stderr}")
+            if result.returncode != 0:
+                self.finished.emit(
+                    False,
+                    result.stderr or result.stdout or "Unknown error",
+                    result.returncode,
+                    branch,
+                )
+                return
+            # Verify branch switch
+            from mkgitbranch.git_utils import get_current_git_branch
+
+            current_branch = get_current_git_branch(env=env)
+            logger.debug(f"[Thread] Current branch after command: {current_branch}")
+            if current_branch != branch:
+                self.finished.emit(
+                    False,
+                    f"Expected branch '{branch}' but current branch is '{current_branch or 'unknown'}",
+                    1,
+                    branch,
+                )
+                return
+            self.finished.emit(
+                True, "Branch created and checked out successfully", 0, branch
+            )
+        except Exception as e:
+            logger.error(f"[Thread] Exception during branch creation: {e}")
+            self.finished.emit(False, str(e), 1, branch)
 
 
 class BranchDialog(QDialog):
@@ -272,6 +414,47 @@ class BranchDialog(QDialog):
         env: Environment variables for subprocesses.
         regexes: Regex patterns for validation.
     """
+
+    def __init__(
+        self,
+        parent: Any = None,
+        env: dict[str, str] | None = None,
+        prefill_jira: str | None = None,
+    ):
+        """
+        Initialize the BranchDialog.
+
+        Args:
+            parent: Parent widget.
+            env: Optional environment variables for subprocesses.
+            prefill_jira: JIRA value to pre-fill, if available.
+        """
+        super().__init__(parent)
+        self._worker = None
+        self._worker_thread = None
+        self.env = env or None
+        self.setWindowTitle("Generate Conventional Git Branch Name")
+        self.setMinimumWidth(500)
+
+        self._cached_words = None  # Cache for the word list
+
+        config = load_config()
+        self.regexes = load_regexes()
+        self.branch_types = config.get(
+            "branch_types", ["feat", "fix", "chore", "test", "refactor", "hotfix"]
+        )
+
+        branch = get_current_git_branch(env=self.env) or ""
+        jira, type_ = parse_branch_for_jira_and_type(branch)
+        config_username = config.get("username", None)
+        username = config_username if config_username is not None else get_os_username()
+        username_readonly = config.get("username_readonly", False)
+        effective_jira = prefill_jira if prefill_jira is not None else (jira or None)
+
+        self._setup_fields(username, username_readonly, type_, effective_jira, config)
+        self._setup_ui(config)
+        self._setup_timers(config)
+        self.update_preview()
 
     def on_username_changed(self, text: str) -> None:
         """
@@ -295,8 +478,8 @@ class BranchDialog(QDialog):
         Args:
             text: Input text from type combo box.
         """
-        if text not in BRANCH_TYPES:
-            self.type_combo.setCurrentText(BRANCH_TYPES[0])
+        if text not in self.branch_types:
+            self.type_combo.setCurrentText(self.branch_types[0])
         self.update_preview()
 
     def on_jira_changed(self, text: str) -> None:
@@ -428,101 +611,42 @@ class BranchDialog(QDialog):
 
     def create_branch(self) -> None:
         """
-        Create a new git branch using the formatted branch name.
-
-        After executing the branch creation command, re-check the current git branch.
-        If the branch has not changed to the expected branch, display an error dialog.
-        On success, display a success dialog and exit with code 0.
-
-        Raises:
-            SystemExit: If the git command fails or the branch is not switched.
-
-        Examples:
-            >>> dlg = BranchDialog()
-            >>> dlg.create_branch()
+        Create a new git branch using the formatted branch name in a background thread.
+        UI is updated via signals when the operation completes.
         """
-        import shlex
-
-        # --- Gather branch name and config ---
         branch = self.preview_value_label.text()
         if not branch:
             return
         config = load_config()
-        template = config.get(
-            "branch_create_command_template",
-            'git switch --quiet --track --create "{branch_name}"',
-        )
+        self.create_btn.setEnabled(False)
+        self.copy_btn.setEnabled(False)
+        self.cancel_btn.setEnabled(False)
+        self.setCursor(Qt.CursorShape.WaitCursor)
+        # Start worker thread
+        self._worker_thread = QThread()
+        self._worker = BranchCreationWorker(branch, config, self.env)
+        self._worker.moveToThread(self._worker_thread)
+        self._worker_thread.started.connect(self._worker.run)
+        self._worker.finished.connect(self._on_branch_creation_finished)
+        self._worker.finished.connect(self._worker_thread.quit)
+        self._worker.finished.connect(self._worker.deleteLater)
+        self._worker_thread.finished.connect(self._worker_thread.deleteLater)
+        self._worker_thread.start()
 
-        # --- Prepare git command ---
-        safe_branch = shlex.quote(branch)
-        command = template.replace("{branch_name}", safe_branch)
-        command_args = shlex.split(command)
-
-        # --- Handle 'git branch' command special case ---
-        if len(command_args) > 1 and command_args[1] == "branch":
-            new_args = []
-            skip_next = False
-            for i, arg in enumerate(command_args):
-                if skip_next:
-                    skip_next = False
-                    continue
-                if arg == "--track":
-                    skip_next = True
-                    continue
-                new_args.append(arg)
-            logger.warning(
-                "Detected use of 'git branch' for branch creation; '--track' parameter has been removed. "
-                "It is recommended to use 'git switch' for branch creation."
-            )
-            command_args = new_args
-            command = shlex.join(command_args)
-
-        try:
-            # --- Run git command to create branch ---
-            logger.debug(
-                f"Running subprocess: `{command}`"
-            )
-            result = subprocess.run(
-                command_args if not isinstance(command, str) else command,
-                shell=isinstance(command, str),
-                capture_output=True,
-                text=True,
-                env=self.env,
-            )
-            logger.debug(f"subprocess stdout: {result.stdout}")
-            logger.debug(f"subprocess stderr: {result.stderr}")
-
-            # --- Handle git command failure ---
-            if result.returncode != 0:
-                logger.error(f"Git command failed with return code {result.returncode}, stderr: {result.stderr}")
-                dlg = ErrorDialog(
-                    result.stderr or result.stdout or "Unknown error",
-                    result.returncode,
-                    self,
-                )
-                dlg.exec()
-                import sys
-                sys.exit(result.returncode)
-
-            # --- Verify branch switch ---
-            current_branch = get_current_git_branch(env=self.env)
-            logger.debug(f"Current branch after command: {current_branch}")
-            if current_branch != branch:
-                logger.error(
-                    f"Branch switch failed: expected '{branch}', got '{current_branch or 'unknown'}'"
-                )
-                dlg = ErrorDialog(
-                    f"Expected branch '{branch}' but current branch is '{current_branch or 'unknown'}'",
-                    exit_code=1,
-                    parent=self,
-                    header_message="Branch switch failed",
-                )
-                dlg.exec()
-                import sys
-                sys.exit(1)
-
-            # --- Show success dialog and exit with code 0 ---
+    def _on_branch_creation_finished(
+        self, success: bool, message: str, exit_code: int, branch: str
+    ):
+        """
+        Slot called when branch creation finishes in the background thread.
+        Updates UI and shows dialogs as needed.
+        """
+        self.setCursor(Qt.CursorShape.ArrowCursor)
+        self.create_btn.setEnabled(True)
+        self.copy_btn.setEnabled(True)
+        self.cancel_btn.setEnabled(True)
+        if success:
             self.accept()
+            config = load_config()
             sound_file = config.get("success_sound_file", "resources/leeroy.mp3")
             dlg = SuccessDialog(
                 f'<div style="text-align:center;">Branch created and checked out successfully:<br/><br/><span style="color:lime;font-weight:bold;font-face:Monaco,Menlo,monospace">{branch}</span></div>',
@@ -531,18 +655,19 @@ class BranchDialog(QDialog):
             )
             dlg.exec()
             import sys
+
             sys.exit(0)
-        except Exception as e:
-            logger.error(f"Exception during branch creation: {e}")
+        else:
             dlg = ErrorDialog(
-                str(e),
-                header_message="git returned an error",
-                exit_code=1,
-                parent=self,
+                message,
+                exit_code,
+                self,
+                header_message="Branch creation failed" if exit_code != 0 else None,
             )
             dlg.exec()
             import sys
-            sys.exit(1)
+
+            sys.exit(exit_code)
 
     def eventFilter(self, obj: Any, event: QEvent) -> bool:
         """
@@ -561,7 +686,7 @@ class BranchDialog(QDialog):
         if obj == self.jira_edit and event.type() == QEvent.Type.KeyPress:
             if isinstance(event, QKeyEvent) and event.key() == Qt.Key.Key_Tab:
                 if self.jira_edit.hasSelectedText():
-                    dash_pos = self.jira_edit.text().find('-')
+                    dash_pos = self.jira_edit.text().find("-")
                     if dash_pos != -1:
                         self.jira_edit.setCursorPosition(dash_pos + 1)
                         self.jira_edit.deselect()
@@ -572,7 +697,10 @@ class BranchDialog(QDialog):
             if isinstance(event, QKeyEvent) and event.key() == Qt.Key.Key_Tab:
                 self.create_btn.setFocus()
                 return True
-            if isinstance(event, QKeyEvent) and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            if isinstance(event, QKeyEvent) and event.key() in (
+                Qt.Key.Key_Return,
+                Qt.Key.Key_Enter,
+            ):
                 if self.create_btn.isEnabled():
                     self.create_branch()
                     return True
@@ -581,8 +709,14 @@ class BranchDialog(QDialog):
                     return True
 
         # Prevent ENTER from activating Cancel when Create is not enabled
-        if obj in (self.username_edit, self.type_combo, self.jira_edit) and event.type() == QEvent.Type.KeyPress:
-            if isinstance(event, QKeyEvent) and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+        if (
+            obj in (self.username_edit, self.type_combo, self.jira_edit)
+            and event.type() == QEvent.Type.KeyPress
+        ):
+            if isinstance(event, QKeyEvent) and event.key() in (
+                Qt.Key.Key_Return,
+                Qt.Key.Key_Enter,
+            ):
                 if self.create_btn.isEnabled():
                     self.create_branch()
                 else:
@@ -627,7 +761,9 @@ class BranchDialog(QDialog):
             try:
                 with path.open("r", encoding="utf-8") as f:
                     self._cached_words = [
-                        line.strip() for line in f if line.strip() and not line.startswith("#")
+                        line.strip()
+                        for line in f
+                        if line.strip() and not line.startswith("#")
                     ]
                 logger.debug(f"Loaded {len(self._cached_words)} words from {path}")
             except FileNotFoundError:
@@ -654,43 +790,14 @@ class BranchDialog(QDialog):
         logger.debug(f"Returning {num_words} random words")
         return self._cached_words[:num_words]
 
-    def __init__(
+    def _setup_fields(
         self,
-        parent: Any = None,
-        env: dict[str, str] | None = None,
-        prefill_jira: str | None = None,
-    ):
-        """
-        Initialize the BranchDialog.
-
-        Args:
-            parent: Parent widget.
-            env: Optional environment variables for subprocesses.
-            prefill_jira: JIRA value to pre-fill, if available.
-        """
-        super().__init__(parent)
-        self.env = env or None
-        self.setWindowTitle("Generate Conventional Git Branch Name")
-        self.setMinimumWidth(500)
-
-        self._cached_words = None  # Cache for the word list
-
-        config = load_config()
-        self.regexes = load_regexes()
-
-        branch = get_current_git_branch(env=self.env) or ""
-        jira, type_ = parse_branch_for_jira_and_type(branch)
-        config_username = config.get("username", None)
-        username = config_username if config_username is not None else get_os_username()
-        username_readonly = config.get("username_readonly", False)
-        effective_jira = prefill_jira if prefill_jira is not None else (jira or None)
-
-        self._setup_fields(username, username_readonly, type_, effective_jira, config)
-        self._setup_ui(config)
-        self._setup_timers(config)
-        self.update_preview()
-
-    def _setup_fields(self, username: str, username_readonly: bool, type_: str, jira: str | None, config: dict[str, Any]) -> None:
+        username: str,
+        username_readonly: bool,
+        type_: str,
+        jira: str | None,
+        config: dict[str, Any],
+    ) -> None:
         """
         Set up the input fields for the dialog.
         """
@@ -698,7 +805,7 @@ class BranchDialog(QDialog):
         self.username_edit.setReadOnly(bool(username_readonly))
         self.username_edit.setStyleSheet("padding: 4px;")
         self.type_combo = QComboBox()
-        self.type_combo.addItems(BRANCH_TYPES)
+        self.type_combo.addItems(self.branch_types)
         self.type_combo.setStyleSheet("padding: 4px 4px 4px 16px;")
         jira_prefix = config.get("jira_prefix", "")
         # Use the provided jira value if available, otherwise fall back to config
@@ -732,6 +839,7 @@ class BranchDialog(QDialog):
         """
         theme = config.get("theme", {})
         import platform
+
         is_dark = False
         if "dark_mode" in theme:
             is_dark = bool(theme["dark_mode"])
@@ -739,6 +847,7 @@ class BranchDialog(QDialog):
             if platform.system() == "Darwin":
                 try:
                     import subprocess
+
                     result = subprocess.run(
                         ["defaults", "read", "-g", "AppleInterfaceStyle"],
                         capture_output=True,
@@ -766,19 +875,27 @@ class BranchDialog(QDialog):
             widget.setStyleSheet(widget.styleSheet() + field_style)
         self.type_combo.setStyleSheet(self.type_combo.styleSheet() + field_style)
         if self.type_combo.lineEdit() is not None:
-            self.type_combo.lineEdit().setStyleSheet(self.type_combo.lineEdit().styleSheet() + field_style)
+            self.type_combo.lineEdit().setStyleSheet(
+                self.type_combo.lineEdit().styleSheet() + field_style
+            )
         grid = QGridLayout()
         grid.addWidget(self.username_edit, 0, 0)
         slash1 = QLabel("/")
-        slash1.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignHCenter)
+        slash1.setAlignment(
+            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignHCenter
+        )
         grid.addWidget(slash1, 0, 1)
         grid.addWidget(self.type_combo, 0, 2)
         slash2 = QLabel("/")
-        slash2.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignHCenter)
+        slash2.setAlignment(
+            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignHCenter
+        )
         grid.addWidget(slash2, 0, 3)
         grid.addWidget(self.jira_edit, 0, 4)
         slash3 = QLabel("/")
-        slash3.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignHCenter)
+        slash3.setAlignment(
+            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignHCenter
+        )
         grid.addWidget(slash3, 0, 5)
         grid.addWidget(self.desc_edit, 0, 6)
         user_label = QLabel("Username")
@@ -808,15 +925,22 @@ class BranchDialog(QDialog):
         layout = QVBoxLayout()
         layout.addLayout(grid)
         from PySide6.QtWidgets import QSpacerItem, QSizePolicy
-        layout.addSpacerItem(QSpacerItem(0, 10, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed))
+
+        layout.addSpacerItem(
+            QSpacerItem(0, 10, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+        )
         self.preview_value_label = QLabel()
-        self.preview_value_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.preview_value_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
         self.preview_value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview_value_label.setStyleSheet(
             "font-family: Menlo, Monaco, 'Fira Mono', 'Liberation Mono', monospace; font-size: 1.1em;"
         )
         layout.addWidget(self.preview_value_label)
-        layout.addSpacerItem(QSpacerItem(0, 10, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed))
+        layout.addSpacerItem(
+            QSpacerItem(0, 10, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+        )
         layout.addLayout(btns)
         self.setLayout(layout)
         cursor_start = config.get("cursor_start", "description")
@@ -885,22 +1009,21 @@ class BranchDialog(QDialog):
         """
         logger.error("No input for 10 minutes, exiting with code 1")
         import sys
+
         sys.exit(1)
 
 
 # Configure loguru to write logs to a file
 log_file_path = Path(user_log_dir("mkgitbranch")) / "mkgitbranch.log"
 logger.remove()
-logger.add(
-    sys.stderr, level="INFO", format="{time} {level} {message}"
-)
+logger.add(sys.stderr, level="INFO", format="{time} {level} {message}")
 logger.add(
     str(log_file_path),
     level="DEBUG",
     format="{time} {level} {message}",
     rotation="16 MB",
     retention=3,
-    compression="zip"
+    compression="zip",
 )
 
 
@@ -927,6 +1050,7 @@ def get_os_username() -> str:
         str: Username of the current OS user.
     """
     import getpass
+
     return getpass.getuser()
 
 
@@ -956,11 +1080,13 @@ def run_app() -> None:
     configure_logging(args.debug)
 
     env = os.environ.copy()
-    work_tree = determine_work_tree(args.directory, env)
-
-    validate_git_repo(work_tree, env)
-    validate_dirty_repo(env)
-    validate_source_branch(env)
+    try:
+        work_tree = determine_work_tree(args.directory, env)
+        validate_git_repo(work_tree, env)
+        validate_dirty_repo(env)
+        validate_source_branch(env)
+    except GitErrorDialogException as exc:
+        sys.exit(exc.exit_code)
 
     prefill_jira = extract_prefill_jira(env)
 
@@ -970,9 +1096,12 @@ def run_app() -> None:
 
     handle_dialog_result(result, app)
 
+
 def parse_arguments() -> argparse.Namespace:
     """Parse command-line arguments."""
-    parser = argparse.ArgumentParser(description="Generate a conventional git branch name.")
+    parser = argparse.ArgumentParser(
+        description="Generate a conventional git branch name."
+    )
     parser.add_argument(
         "directory",
         nargs="?",
@@ -982,10 +1111,12 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     return parser.parse_args()
 
+
 def configure_logging(debug: bool) -> None:
     """Configure logging based on debug flag."""
     logger.remove()
     logger.add(sys.stderr, level="DEBUG" if debug else "INFO")
+
 
 def determine_work_tree(directory: Optional[str], env: dict[str, str]) -> Optional[str]:
     """Determine the git work tree based on environment and arguments."""
@@ -999,11 +1130,10 @@ def determine_work_tree(directory: Optional[str], env: dict[str, str]) -> Option
             os.chdir(dir_path)
             return str(dir_path)
         else:
-            show_git_error_dialog(
-                f"{directory} is not a directory!", exit_code=1
-            )
+            show_git_error_dialog(f"{directory} is not a directory!", exit_code=1)
 
     return None
+
 
 def validate_git_repo(work_tree: Optional[str], env: dict[str, str]) -> None:
     """Validate that the current directory is a git repository."""
@@ -1022,6 +1152,7 @@ def validate_git_repo(work_tree: Optional[str], env: dict[str, str]) -> None:
             f"{work_tree or os.getcwd()} is not a valid git repo!", exit_code=1
         )
 
+
 def validate_dirty_repo(env: dict[str, str]) -> None:
     """Check for uncommitted changes in the repository."""
     config = load_config()
@@ -1039,6 +1170,7 @@ def validate_dirty_repo(env: dict[str, str]) -> None:
                 header_message="Uncommitted Changes Detected",
             )
 
+
 def validate_source_branch(env: dict[str, str]) -> None:
     """Validate that the current branch is not forbidden as a source branch."""
     config = load_config()
@@ -1055,7 +1187,10 @@ def validate_source_branch(env: dict[str, str]) -> None:
                         header_message="Forbidden Source Branch",
                     )
             except re.error as exc:
-                logger.error(f"Invalid regex in forbidden_source_branches: {pattern} ({exc})")
+                logger.error(
+                    f"Invalid regex in forbidden_source_branches: {pattern} ({exc})"
+                )
+
 
 def extract_prefill_jira(env: dict[str, str]) -> Optional[str]:
     """Extract JIRA issue from the current branch name."""
@@ -1073,6 +1208,7 @@ def extract_prefill_jira(env: dict[str, str]) -> Optional[str]:
         if match:
             return match.group("jira")
     return None
+
 
 def handle_dialog_result(result: int, app: QApplication) -> None:
     """Handle the result of the BranchDialog."""
