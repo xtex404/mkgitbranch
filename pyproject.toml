@@ -69,5 +69,22 @@ dev = [
 
 
 [tool.mkgitbranch]
-# Default configuration for mkgitbranch
-success_sound_file = "/Users/jm/Library/CloudStorage/OneDrive-Personal/AppData/ha_mobile_sounds/instant_dance_party.mp3"
+
+username = "justin"
+username_readonly = false
+jira_prefix = "IAS-"
+timeout_minutes = 10
+cursor_start = "description"
+branch_create_command_template = 'git switch --quiet --create --track "{branch_name}"'
+allow_dirty = false
+
+
+[tool.mkgitbranch.regex]
+# Regular expression for validating the username field.
+username = "^[a-zA-Z0-9_-]{2,7}$"
+# Regular expression for allowed branch types.
+type = "^(feat|fix|chore|test|refactor|hotfix)$"
+# Regular expression for JIRA issue keys (e.g., ABC-123).
+jira = "^[A-Z]{2,6}-[1-9][0-9]{,4}$"
+# Regular expression for the description field.
+description = "^[a-z][a-z0-9-]{,30}$"
