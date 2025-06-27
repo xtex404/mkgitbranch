@@ -4,8 +4,12 @@ version = "0.1.0"
 description = "Cross-platform GUI tool for generating conventional git branch names."
 authors = [
     { name = "Justin Matlock", email = "xtex404@gmail.com" }
-    ]
+]
 requires-python = ">=3.13"
+dependencies = [
+    "loguru>=0.7.3",
+    "PySide6>=6.7.0",
+]
 
 [build-system]
 requires = ["hatchling"]
