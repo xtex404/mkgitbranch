@@ -75,7 +75,6 @@ username_readonly = false
 jira_prefix = "IAS-"
 timeout_minutes = 10
 cursor_start = "description"
-branch_create_command_template = 'git switch --quiet --create --track "{branch_name}"'
 allow_dirty = true
 
 
