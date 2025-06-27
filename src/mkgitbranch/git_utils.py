@@ -7,9 +7,9 @@ This module provides functions for interacting with git, such as retrieving the 
 import re
 import shlex
 import subprocess
+import sys
 from typing import Any, Optional
 
-from PySide6.QtWidgets import QApplication
 from loguru import logger
 
 from .config import load_regexes
@@ -90,8 +90,6 @@ def show_git_error_dialog(message: str, exit_code: int = 1, header_message: str 
         header_message: Optional header for the dialog.
     """
     from .gui import ErrorDialog
-    import sys
-    app = QApplication.instance() or QApplication([])
     dlg = ErrorDialog(
         message,
         exit_code=exit_code,

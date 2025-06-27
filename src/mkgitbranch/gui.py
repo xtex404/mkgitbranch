@@ -8,16 +8,17 @@ Example:
     >>> run_app()
 """
 
-
 import argparse
 import os
 import re
 import subprocess
 from pathlib import Path
 from typing import Any
+from functools import lru_cache
 
-from PySide6.QtCore import Qt, QTimer, QEvent
+from PySide6.QtCore import QUrl, Qt, QTimer, QEvent
 from PySide6.QtGui import QClipboard
+from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -29,17 +30,12 @@ from PySide6.QtWidgets import (
     QPushButton,
     QVBoxLayout,
 )
-from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
-from PySide6.QtCore import QUrl
 from loguru import logger
 
 from mkgitbranch.config import load_config, load_regexes
 from mkgitbranch.git_utils import get_current_git_branch, parse_branch_for_jira_and_type
 
 BRANCH_TYPES: list[str] = ["feat", "fix", "chore", "test", "refactor", "hotfix"]
-
-# Update CONFIG_PATH to use expanduser and resolve
-CONFIG_PATH: Path = (Path(__file__).parent.parent.parent / "mkgitbranch_config.toml").expanduser().resolve()
 
 APPLICATION_NAME: str = "mkgitbranch"
 
@@ -53,9 +49,7 @@ def _show_git_error_dialog(message: str, exit_code: int = 1, header_message: str
         exit_code: The exit code to use when exiting.
         header_message: Optional header for the dialog.
     """
-    from PySide6.QtWidgets import QApplication
     import sys
-    app = QApplication.instance() or QApplication([])
     dlg = ErrorDialog(
         message,
         exit_code=exit_code,
@@ -64,6 +58,7 @@ def _show_git_error_dialog(message: str, exit_code: int = 1, header_message: str
     )
     dlg.exec()
     sys.exit(exit_code)
+
 
 def format_branch_name(username: str, type_: str, jira: str, description: str) -> str:
     """
@@ -102,24 +97,29 @@ class ErrorDialog(QDialog):
         header_message: str | None = None,
         window_title: str = f"{APPLICATION_NAME} Error",
     ):
+        # --- Dialog setup ---
         super().__init__(parent)
         self.setWindowTitle(window_title)
         self.setMinimumWidth(500)
         layout = QVBoxLayout()
 
+        # --- Header message (if provided) ---
         if header_message:
             header_label = QLabel(
                 f'<div style="text-align:center; font-weight:bold;">{header_message}</div>'
             )
             layout.addWidget(header_label)
 
+        # --- Error message ---
         error_label = QLabel(f"<div style=\"text-align:center\">{message}</div>")
         error_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(error_label)
-        # Add vertical spacer for extra space above the button
+
+        # --- Spacer for visual separation ---
         from PySide6.QtWidgets import QSpacerItem, QSizePolicy
         layout.addSpacerItem(QSpacerItem(0, 13, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed))
 
+        # --- Close button setup ---
         btn = QPushButton("Close")
         btn.clicked.connect(self.accept)
         btn_width = 130
@@ -143,7 +143,6 @@ class SuccessDialog(QDialog):
         message: Success message to display.
         parent: Parent widget.
         window_title: Window title for the dialog.
-        timeout_seconds: Timeout in seconds before auto-exit.
         sound_file: Path to the sound file to play.
     """
 
@@ -152,23 +151,24 @@ class SuccessDialog(QDialog):
         message: str,
         parent: Any = None,
         window_title: str = f"{APPLICATION_NAME} Success",
-        timeout_seconds: int = 60,
         sound_file: str = "resources/leeroy.mp3",
     ):
+        # --- Dialog setup ---
         super().__init__(parent)
         self.setWindowTitle(window_title)
         self.setMinimumWidth(400)
         layout = QVBoxLayout()
 
-        success_label = QLabel(
-            f'<div style="text-align:center; font-weight:bold; color:#228B22;">{message}</div>'
-        )
+        # --- Success message ---
+        success_label = QLabel(message)
         success_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(success_label)
 
+        # --- Spacer for visual separation ---
         from PySide6.QtWidgets import QSpacerItem, QSizePolicy
         layout.addSpacerItem(QSpacerItem(0, 13, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed))
 
+        # --- OK button setup ---
         self.ok_btn = QPushButton("OK")
         self.ok_btn.setFixedWidth(130)
         self.ok_btn.clicked.connect(self._on_ok)
@@ -178,16 +178,10 @@ class SuccessDialog(QDialog):
         layout.addLayout(btn_layout)
         self.setLayout(layout)
 
-        # Timer for auto-close
-        self._timer = QTimer(self)
-        self._timer.setInterval(timeout_seconds * 1000)
-        self._timer.setSingleShot(True)
-        self._timer.timeout.connect(self._on_ok)
-        self._timer.start()
-
-        # Play sound if file exists
+        # --- Play sound if file exists ---
         self._player = None
         if sound_file:
+            logger.debug(f"Attempting to play sound file: {sound_file}")
             self._play_sound(sound_file)
 
     def _play_sound(self, sound_file: str) -> None:
@@ -197,20 +191,72 @@ class SuccessDialog(QDialog):
         Args:
             sound_file: Path to the sound file.
         """
-        import os
-        if not os.path.isfile(sound_file):
-            return
-        self._player = QMediaPlayer(self)
-        self._audio_output = QAudioOutput(self)
-        self._player.setAudioOutput(self._audio_output)
-        self._player.setSource(QUrl.fromLocalFile(os.path.abspath(sound_file)))
-        self._audio_output.setVolume(0.8)
-        self._player.play()
+        from pathlib import Path
+
+        logger.debug(f"_play_sound called with: {sound_file}")
+
+        # --- Try to resolve the sound file path in several ways ---
+        resolved_path: Path | None = None
+
+        # Try as given, with expanduser and resolve
+        candidate = Path(sound_file).expanduser().resolve()
+        if candidate.is_file():
+            resolved_path = candidate
+            logger.debug(f"Sound file found as given: {resolved_path}")
+        else:
+            # Try relative to this file's directory (i.e., package resource)
+            gui_dir = Path(__file__).parent
+            candidate_pkg = (gui_dir / sound_file).expanduser().resolve()
+            logger.debug(f"Trying package-relative path: {candidate_pkg}")
+            if candidate_pkg.is_file():
+                resolved_path = candidate_pkg
+                logger.debug(f"Sound file found at package-relative path: {resolved_path}")
+            else:
+                # Try relative to project root (one level up from src/mkgitbranch)
+                project_root = gui_dir.parent.parent
+                candidate_root = (project_root / sound_file).expanduser().resolve()
+                logger.debug(f"Trying project-root-relative path: {candidate_root}")
+                if candidate_root.is_file():
+                    resolved_path = candidate_root
+                    logger.debug(f"Sound file found at project-root-relative path: {resolved_path}")
+                else:
+                    logger.debug(
+                        f"Sound file does not exist: {sound_file} "
+                        f"(checked: {candidate}, {candidate_pkg}, {candidate_root})"
+                    )
+                    return
+        # --- Setup and play sound using QMediaPlayer ---
+        try:
+            self._player = QMediaPlayer(self)
+            self._audio_output = QAudioOutput(self)
+            self._player.setAudioOutput(self._audio_output)
+            self._audio_output.setVolume(0.8)
+
+            # Connect to mediaStatusChanged to play as soon as loaded
+            def on_media_status_changed(status):
+                from PySide6.QtMultimedia import QMediaPlayer
+                logger.debug(f"QMediaPlayer mediaStatusChanged: {status}")
+                if status == QMediaPlayer.MediaStatus.LoadedMedia:
+                    logger.debug("Media loaded, calling play()")
+                    self._player.play()
+                    # Disconnect to avoid repeated calls
+                    self._player.mediaStatusChanged.disconnect(on_media_status_changed)
+
+            self._player.mediaStatusChanged.connect(on_media_status_changed)
+            logger.debug(f"Setting QMediaPlayer source to: {resolved_path}")
+            self._player.setSource(QUrl.fromLocalFile(str(resolved_path)))
+            # If already loaded, play immediately (for cached files)
+            from PySide6.QtMultimedia import QMediaPlayer as QMP
+            if self._player.mediaStatus() == QMP.MediaStatus.LoadedMedia:
+                logger.debug("Media already loaded, calling play() immediately")
+                self._player.play()
+        except Exception as exc:
+            logger.error(f"Exception while trying to play sound file '{sound_file}': {exc}")
 
     def _on_ok(self) -> None:
-        """Exit with code 0 on OK or timeout."""
-        import sys
-        sys.exit(0)
+        """Gracefully exit the application on OK or timeout."""
+        self.accept()
+        QApplication.quit()
 
 
 class BranchDialog(QDialog):
@@ -311,38 +357,42 @@ class BranchDialog(QDialog):
         Update the branch preview label and button states.
         Show the preview as each component matches its regex, not only when all are valid.
         """
+        # --- Gather and normalize field values ---
         username = self.username_edit.text().strip()
         type_ = self.type_combo.currentText().strip()
         jira = self.jira_edit.text().strip().upper()
         desc = self.desc_edit.text().strip().lower().replace(" ", "-")
 
+        # --- Validate each field using regexes ---
         valid_username = bool(self.regexes["username"].fullmatch(username))
         valid_type = bool(self.regexes["type"].fullmatch(type_))
         valid_jira = bool(self.regexes["jira"].fullmatch(jira))
         valid_desc = bool(self.regexes["description"].fullmatch(desc))
 
+        # --- Set field colors based on validity ---
         self._set_field_color(self.username_edit, valid_username)
         self._set_field_color(self.jira_edit, valid_jira)
         self._set_field_color(self.desc_edit, valid_desc)
 
-        # Show preview as soon as a component is valid, using empty string for invalid components
+        # --- Build preview using only valid components ---
         preview_username = username if valid_username else ""
         preview_type = type_ if valid_type else ""
         preview_jira = jira if valid_jira else ""
         preview_desc = desc if valid_desc else ""
 
-        # Only add slashes for filled components, avoid trailing slashes
         preview_parts = [preview_username, preview_type, preview_jira, preview_desc]
         preview = "/".join([part for part in preview_parts if part])
 
         self.preview_value_label.setText(preview)
 
+        # --- Enable/disable buttons based on validity ---
         prev_copy_enabled = self.copy_btn.isEnabled()
         prev_create_enabled = self.create_btn.isEnabled()
         all_valid = valid_username and valid_type and valid_jira and valid_desc
         self.copy_btn.setEnabled(all_valid)
         self.create_btn.setEnabled(all_valid)
-        # Set default button to the leftmost enabled (create or copy) when first enabled
+
+        # --- Set default button logic ---
         if not prev_create_enabled and self.create_btn.isEnabled():
             self.create_btn.setDefault(True)
             self.copy_btn.setDefault(False)
@@ -391,6 +441,7 @@ class BranchDialog(QDialog):
         """
         import shlex
 
+        # --- Gather branch name and config ---
         branch = self.preview_value_label.text()
         if not branch:
             return
@@ -400,14 +451,13 @@ class BranchDialog(QDialog):
             'git switch --quiet --track --create "{branch_name}"',
         )
 
-        # Sanitize the branch name for shell usage
+        # --- Prepare git command ---
         safe_branch = shlex.quote(branch)
         command = template.replace("{branch_name}", safe_branch)
-
-        # If the command is a 'git branch ...' command, remove '--track' and its parameter, and log a warning
         command_args = shlex.split(command)
+
+        # --- Handle 'git branch' command special case ---
         if len(command_args) > 1 and command_args[1] == "branch":
-            # Remove '--track' and the parameter following it
             new_args = []
             skip_next = False
             for i, arg in enumerate(command_args):
@@ -426,6 +476,7 @@ class BranchDialog(QDialog):
             command = shlex.join(command_args)
 
         try:
+            # --- Run git command to create branch ---
             logger.debug(
                 f"Running subprocess: `{command}`"
             )
@@ -438,6 +489,8 @@ class BranchDialog(QDialog):
             )
             logger.debug(f"subprocess stdout: {result.stdout}")
             logger.debug(f"subprocess stderr: {result.stderr}")
+
+            # --- Handle git command failure ---
             if result.returncode != 0:
                 logger.error(f"Git command failed with return code {result.returncode}, stderr: {result.stderr}")
                 dlg = ErrorDialog(
@@ -448,6 +501,8 @@ class BranchDialog(QDialog):
                 dlg.exec()
                 import sys
                 sys.exit(result.returncode)
+
+            # --- Verify branch switch ---
             current_branch = get_current_git_branch(env=self.env)
             logger.debug(f"Current branch after command: {current_branch}")
             if current_branch != branch:
@@ -463,12 +518,12 @@ class BranchDialog(QDialog):
                 dlg.exec()
                 import sys
                 sys.exit(1)
+
             # --- Show success dialog and exit with code 0 ---
-            # Refactoring: close the primary dialog before showing success dialog
             self.accept()
             sound_file = config.get("success_sound_file", "resources/leeroy.mp3")
             dlg = SuccessDialog(
-                f"Branch <b>{branch}</b> created and checked out successfully!",
+                f'<div style="text-align:center;">Branch created and checked out successfully:<br/><br/><span style="color:lime;font-weight:bold;font-face:Monaco,Menlo,monospace">{branch}</span></div>',
                 parent=None,
                 sound_file=sound_file,
             )
@@ -523,7 +578,7 @@ class BranchDialog(QDialog):
         self,
         parent: Any = None,
         env: dict[str, str] | None = None,
-        prefill_jira: str | None = None,  # New argument for pre-filling JIRA
+        prefill_jira: str | None = None,
     ):
         """
         Initialize the BranchDialog.
@@ -533,6 +588,7 @@ class BranchDialog(QDialog):
             env: Optional environment variables for subprocesses.
             prefill_jira: JIRA value to pre-fill, if available.
         """
+        # --- Dialog setup and config ---
         super().__init__(parent)
         self.env = env or None
         self.setWindowTitle("Generate Conventional Git Branch Name")
@@ -541,15 +597,15 @@ class BranchDialog(QDialog):
         config = load_config()
         self.regexes = load_regexes()
 
+        # --- Pre-fill fields based on current branch and config ---
         branch = get_current_git_branch(env=self.env) or ""
         jira, type_ = parse_branch_for_jira_and_type(branch)
         config_username = config.get("username", None)
         username = config_username if config_username is not None else get_os_username()
         username_readonly = config.get("username_readonly", False)
-
-        # If prefill_jira is provided, use it (overrides config and branch parse)
         effective_jira = prefill_jira if prefill_jira is not None else (jira or None)
 
+        # --- Setup fields, UI, timers, and preview ---
         self._setup_fields(username, username_readonly, type_, effective_jira, config)
         self._setup_ui(config)
         self._setup_timers(config)
@@ -773,6 +829,11 @@ def get_os_username() -> str:
     return getpass.getuser()
 
 
+def strip_anchors(pattern: str) -> str:
+    """Remove ^ and $ anchors from a regex pattern string."""
+    return pattern.removeprefix("^").removesuffix("$")
+
+
 def run_app() -> None:
     """
     Run the mkgitbranch GUI application.
@@ -858,28 +919,43 @@ def run_app() -> None:
         sys.exit(1)
 
     # --- New logic: pre-fill JIRA from current branch if possible ---
-    from mkgitbranch.git_utils import get_current_git_branch, parse_branch_for_jira_and_type
+
+    logger.debug("Attempting to pre-fill JIRA from current branch using env: {}", _filtered_env_for_log(env))
     current_branch = get_current_git_branch(env=env)
+    logger.debug(f"Current branch detected: {current_branch!r}")
+
     prefill_jira = None
     if current_branch:
         # Try to match username/type/jira/description exactly
         regexes = load_regexes()
-        username_re = regexes["username"]
-        type_re = regexes["type"]
-        jira_re = regexes["jira"]
-        desc_re = regexes["description"]
-        pattern = re.compile(
-            rf"^(?P<username>{username_re.pattern})/(?P<type>{type_re.pattern})/(?P<jira>{jira_re.pattern})/(?P<desc>{desc_re.pattern})$"
+
+        username_re = strip_anchors(regexes["username"].pattern)
+        type_re = strip_anchors(regexes["type"].pattern)
+        jira_re = strip_anchors(regexes["jira"].pattern)
+        desc_re = strip_anchors(regexes["description"].pattern)
+        logger.debug(
+            f"Regex patterns (no anchors): username={username_re!r}, type={type_re!r}, "
+            f"jira={jira_re!r}, desc={desc_re!r}"
         )
+        pattern = re.compile(
+            rf"^(?P<username>{username_re})/(?P<type>{type_re})/(?P<jira>{jira_re})/(?P<desc>{desc_re})$",
+            re.IGNORECASE,
+        )
+        logger.debug(f"Compiled branch pattern: {pattern.pattern}")
         m = pattern.match(current_branch)
         if m:
             prefill_jira = m.group("jira")
+            logger.debug(f"JIRA prefill matched from branch: {prefill_jira}")
+        else:
+            logger.debug("Current branch did not match the expected pattern for JIRA prefill")
     # --------------------------------------------------------------
 
     app = QApplication(sys.argv)
     dlg = BranchDialog(env=env, prefill_jira=prefill_jira)
     result = dlg.exec()
+    # Use sys.exit here if you want to set an exit code
     if result == QDialog.DialogCode.Accepted:
-        pass
+        app.exec()  # Wait for any further dialogs (e.g., SuccessDialog) to finish
+        sys.exit(0)
     else:
-        sys.exit(100)
+        sys.exit(0)  # Changed from 100 to 0 for cancel

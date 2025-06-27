@@ -9,6 +9,7 @@ import re
 import tomllib
 from pathlib import Path
 from typing import Any
+from functools import lru_cache
 
 import platformdirs
 from loguru import logger
@@ -76,6 +77,7 @@ def find_toml_config(path: Path) -> dict[str, Any]:
     logger.debug(f"No config file found at {path}")
     return {}
 
+@lru_cache(maxsize=1)
 def load_config() -> dict[str, Any]:
     """
     Load configuration from the first available source:
@@ -118,6 +120,7 @@ def load_config() -> dict[str, Any]:
     logger.debug("No configuration file found, using empty config")
     return {}
 
+@lru_cache(maxsize=1)
 def load_regexes() -> dict[str, re.Pattern]:
     """
     Load regex patterns for field validation from config.

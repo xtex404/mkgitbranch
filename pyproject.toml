@@ -66,3 +66,8 @@ dev = [
     "isort>=6.0.1",
     "ruff>=0.12.0",
 ]
+
+
+[tool.mkgitbranch]
+# Default configuration for mkgitbranch
+success_sound_file = "/Users/jm/Library/CloudStorage/OneDrive-Personal/AppData/ha_mobile_sounds/instant_dance_party.mp3"
