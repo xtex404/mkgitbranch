@@ -1,0 +1,59 @@
+# Default word list for mkgitbranch easter egg
+# Planets
+mercury
+venus
+earth
+mars
+jupiter
+saturn
+uranus
+neptune
+pluto
+
+# Penguin species
+emperor
+king
+adelie
+chinstrap
+gentoo
+macaroni
+rockhopper
+little
+fiordland
+crested
+
+# Elements
+hydrogen
+helium
+lithium
+beryllium
+boron
+carbon
+nitrogen
+oxygen
+fluorine
+neon
+
+# Dog breeds
+labrador
+bulldog
+beagle
+poodle
+rottweiler
+boxer
+husky
+dachshund
+terrier
+spaniel
+
+# Adult Swim cartoon characters
+rick
+morty
+birdperson
+meeseeks
+space-beth
+jerry
+summer
+squanchy
+mr-poopybutthole
+noob-noob

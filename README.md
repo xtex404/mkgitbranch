@@ -4,23 +4,23 @@
 
 - [Features](#features)
 - [Installation](#installation)
-  - [Prerequisites](#prerequisites)
-  - [Install with uv](#install-with-uv)
+    - [Prerequisites](#prerequisites)
+    - [Install with uv](#install-with-uv)
 - [Usage](#usage)
 - [Configuration](#configuration)
-  - [Configuration Priorities](#configuration-priorities)
-  - [Example: Standalone `mkgitbranch_config.toml`](#example-standalone-mkgitbranch_configtoml)
-  - [Example: Embedded in `pyproject.toml`](#example-embedded-in-pyprojecttoml)
+    - [Configuration Priorities](#configuration-priorities)
+    - [Example: Standalone `mkgitbranch_config.toml`](#example-standalone-mkgitbranch_configtoml)
+    - [Example: Embedded in `pyproject.toml`](#example-embedded-in-pyprojecttoml)
 - [Configuration Reference](#configuration-reference)
 - [Security](#security)
 - [Troubleshooting](#troubleshooting)
 - [Contributing](#contributing)
 - [License](#license)
 - [Building Standalone Executables](#building-standalone-executables)
-  - [Prerequisites](#prerequisites-1)
-  - [Build Steps](#build-steps)
-  - [Notes](#notes)
-  - [Windows Compatibility Notes](#windows-compatibility-notes)
+    - [Prerequisites](#prerequisites-1)
+    - [Build Steps](#build-steps)
+    - [Notes](#notes)
+    - [Windows Compatibility Notes](#windows-compatibility-notes)
 
 <!-- mdformat-toc end -->
 
@@ -88,8 +88,7 @@ Follow the prompts to select a branch type, enter a ticket or issue number, and 
 
 ## Configuration<a name="configuration"></a>
 
-mkgitbranch supports configuration via a TOML file.
-The default configuration file is located at:
+mkgitbranch supports configuration via a TOML file. The default configuration file is located at:
 
 - `{project_root}/mkgitbranch_config.toml`
 
@@ -100,8 +99,10 @@ You can also place a `pyproject.toml` in your project root with a `[tool.mkgitbr
 mkgitbranch loads configuration in the following order (first found wins):
 
 1. **Project-specific `pyproject.toml`**: If a `pyproject.toml` file exists in the project root (or any parent directory) with a `[tool.mkgitbranch]` section, it will be used.
-1. **XDG config (`$XDG_CONFIG_HOME`)**: If no project config is found, mkgitbranch will look for `mkgitbranch.toml` in `$XDG_CONFIG_HOME/mkgitbranch/mkgitbranch.toml` (Linux/macOS, if `XDG_CONFIG_HOME` is set).
-1. **Platform user config**: If not found above, mkgitbranch will look for `mkgitbranch.toml` in the platform-specific user config directory (e.g., `~/.config/mkgitbranch/mkgitbranch.toml` on Linux/macOS, `%APPDATA%/mkgitbranch/mkgitbranch.toml` on Windows).
+1. **XDG config (`$XDG_CONFIG_HOME`)**: If no project config is found, mkgitbranch will look for `mkgitbranch.toml` in
+   `$XDG_CONFIG_HOME/mkgitbranch/mkgitbranch.toml` (Linux/macOS, if `XDG_CONFIG_HOME` is set).
+1. **Platform user config**: If not found above, mkgitbranch will look for `mkgitbranch.toml` in the platform-specific user config directory (e.g.,
+   `~/.config/mkgitbranch/mkgitbranch.toml` on Linux/macOS, `%APPDATA%/mkgitbranch/mkgitbranch.toml` on Windows).
 1. **Home directory**: If still not found, mkgitbranch will look for `.mkgitbranch.toml` in your home directory (`~/.mkgitbranch.toml`).
 1. **Defaults**: If no configuration file is found, built-in defaults are used.
 
@@ -162,10 +163,11 @@ description = "^[a-z][a-z0-9-]{,30}$"
 
 ## Configuration Reference<a name="configuration-reference"></a>
 
-Below is a comprehensive list of all configuration parameters supported by mkgitbranch, their types, descriptions, and default values. These can be set in a standalone `mkgitbranch_config.toml` or in the `[tool.mkgitbranch]` section of your `pyproject.toml`.
+Below is a comprehensive list of all configuration parameters supported by mkgitbranch, their types, descriptions, and default values. These can be set in a standalone
+`mkgitbranch_config.toml` or in the `[tool.mkgitbranch]` section of your `pyproject.toml`.
 
 | Option                         | Type   | Default                                               | Description                                                                        |
-| ------------------------------ | ------ | ----------------------------------------------------- | ---------------------------------------------------------------------------------- |
+|--------------------------------|--------|-------------------------------------------------------|------------------------------------------------------------------------------------|
 | username                       | string | (OS username)                                         | Username to use as branch prefix.                                                  |
 | username_readonly              | bool   | false                                                 | If true, username field is read-only in the GUI.                                   |
 | jira_prefix                    | string | ""                                                    | Optional prefix to pre-fill in the JIRA field.                                     |
@@ -187,6 +189,7 @@ Below is a comprehensive list of all configuration parameters supported by mkgit
 | [theme.dark] error_foreground  | string | #EE4B2B                                               | Foreground color for error messages in dark mode.                                  |
 | [theme.dark] label_foreground  | string | #cccccc                                               | Foreground color for labels in dark mode.                                          |
 | [theme.dark] field_foreground  | string | #ffffff                                               | Foreground color for input fields in dark mode.                                    |
+| word_list_path                 | string | (resources/words.txt)                                 | Path to a custom word list for the Ctrl+R easter egg (Cmd-R on macOS).             |
 
 **Valid values for `cursor_start`:**
 
@@ -281,6 +284,12 @@ For more information, see the source code and inline documentation.
 
 ### Windows Compatibility Notes<a name="windows-compatibility-notes"></a>
 
-- If you customize the `branch_create_command_template` in your configuration, use double quotes for arguments (e.g., `"git switch --quiet --track --create \"{branch_name}\""`). Single quotes may not work in Windows CMD or PowerShell.
+- If you customize the `branch_create_command_template` in your configuration, use double quotes for arguments (e.g.,
+  `"git switch --quiet --track --create \"{branch_name}\""`). Single quotes may not work in Windows CMD or PowerShell.
 - Ensure that `git` is available in your system `PATH`.
 - All other features, including clipboard integration and GUI, work cross-platform without changes.
+
+**Easter Egg:**
+
+- Press **Ctrl+R** in the main dialog to auto-fill the description field with 3-5 random words from a word list.
+- By default, the word list is loaded from `src/mkgitbranch/resources/words.txt`. You can override this with the `word_list_path` config parameter.

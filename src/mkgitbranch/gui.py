@@ -14,7 +14,7 @@ import re
 import subprocess
 import random
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from PySide6.QtCore import QUrl, Qt, QTimer, QEvent
 from PySide6.QtGui import QClipboard
@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 from loguru import logger
+from platformdirs import user_log_dir
 
 from mkgitbranch.config import load_config, load_regexes
 from mkgitbranch.git_utils import get_current_git_branch, parse_branch_for_jira_and_type
@@ -886,6 +887,22 @@ class BranchDialog(QDialog):
         sys.exit(1)
 
 
+# Configure loguru to write logs to a file
+log_file_path = Path(user_log_dir("mkgitbranch")) / "mkgitbranch.log"
+logger.remove()
+logger.add(
+    sys.stderr, level="INFO", format="{time} {level} {message}"
+)
+logger.add(
+    str(log_file_path),
+    level="DEBUG",
+    format="{time} {level} {message}",
+    rotation="16 MB",
+    retention=3,
+    compression="zip"
+)
+
+
 def _filtered_env_for_log(env: dict[str, str] | None) -> dict[str, str]:
     """
     Return a filtered copy of the environment containing only PATH and variables starting with GIT_.
@@ -934,6 +951,26 @@ def run_app() -> None:
     """
     import sys
 
+    args = parse_arguments()
+    configure_logging(args.debug)
+
+    env = os.environ.copy()
+    work_tree = determine_work_tree(args.directory, env)
+
+    validate_git_repo(work_tree, env)
+    validate_dirty_repo(env)
+    validate_source_branch(env)
+
+    prefill_jira = extract_prefill_jira(env)
+
+    app = QApplication(sys.argv)
+    dlg = BranchDialog(env=env, prefill_jira=prefill_jira)
+    result = dlg.exec()
+
+    handle_dialog_result(result, app)
+
+def parse_arguments() -> argparse.Namespace:
+    """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description="Generate a conventional git branch name.")
     parser.add_argument(
         "directory",
@@ -942,43 +979,34 @@ def run_app() -> None:
         help="Optional working directory for git operations",
     )
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
-    args = parser.parse_args()
-    if args.debug:
-        logger.remove()
-        logger.add(sys.stderr, level="DEBUG")
-    else:
-        logger.remove()
-        logger.add(sys.stderr, level="INFO")
-    env = os.environ.copy()
-    work_tree = None
+    return parser.parse_args()
 
-    # Prefer GIT_WORK_TREE if set in the environment
-    git_work_tree_env = env.get("GIT_WORK_TREE")
-    if git_work_tree_env:
-        work_tree = git_work_tree_env
-        # Do not change env or cwd if GIT_WORK_TREE is set
-    elif args.directory:
-        dir_path = Path(args.directory).expanduser().resolve()
+def configure_logging(debug: bool) -> None:
+    """Configure logging based on debug flag."""
+    logger.remove()
+    logger.add(sys.stderr, level="DEBUG" if debug else "INFO")
+
+def determine_work_tree(directory: Optional[str], env: dict[str, str]) -> Optional[str]:
+    """Determine the git work tree based on environment and arguments."""
+    if env.get("GIT_WORK_TREE"):
+        return env["GIT_WORK_TREE"]
+
+    if directory:
+        dir_path = Path(directory).expanduser().resolve()
         if dir_path.is_dir():
             env["GIT_WORK_TREE"] = str(dir_path)
-            work_tree = str(dir_path)
             os.chdir(dir_path)
+            return str(dir_path)
         else:
-            logger.error(f"Provided directory is not valid: {args.directory}")
-            app = QApplication(sys.argv)
-            dlg = ErrorDialog(
-                f'<span style="text-align:center;font-family:Menlo,Monaco,monospace;font-size:0.8em">{args.directory}</span> is not a directory!',
-                parent=None,
-                exit_code=1,
+            show_git_error_dialog(
+                f"{directory} is not a directory!", exit_code=1
             )
-            dlg.exec()
-            sys.exit(1)
-    # If neither GIT_WORK_TREE nor directory is set, use current directory
+
+    return None
+
+def validate_git_repo(work_tree: Optional[str], env: dict[str, str]) -> None:
+    """Validate that the current directory is a git repository."""
     try:
-        logger.debug(
-            f"Running subprocess: ['git', 'rev-parse', '--is-inside-work-tree'] "
-            f"with env: {_filtered_env_for_log(env)}"
-        )
         result = subprocess.run(
             ["git", "rev-parse", "--is-inside-work-tree"],
             capture_output=True,
@@ -986,106 +1014,69 @@ def run_app() -> None:
             check=True,
             env=env,
         )
-        logger.debug(f"subprocess stdout: {result.stdout}")
-        logger.debug(f"subprocess stderr: {result.stderr}")
         if result.stdout.strip() != "true":
             raise Exception()
     except Exception:
-        logger.error(f"Directory is not a valid git repo: {work_tree or args.directory or os.getcwd()}")
-        app = QApplication(sys.argv)
-        dlg = ErrorDialog(
-            f'<span style="text-align:center;font-family:Menlo,Monaco,monospace;font-size:0.8em;">{work_tree or args.directory or os.getcwd()}</span> is not a valid git repo!',
-            parent=None,
-            exit_code=1,
+        show_git_error_dialog(
+            f"{work_tree or os.getcwd()} is not a valid git repo!", exit_code=1
         )
-        dlg.exec()
-        sys.exit(1)
 
-    # --- Check for dirty repo if allow_dirty is False ---
+def validate_dirty_repo(env: dict[str, str]) -> None:
+    """Check for uncommitted changes in the repository."""
     config = load_config()
-    allow_dirty = config.get("allow_dirty", False)
-    if not allow_dirty:
-        logger.debug("Checking for dirty working tree because allow_dirty is False or unset")
-        dirty_result = subprocess.run(
+    if not config.get("allow_dirty", False):
+        result = subprocess.run(
             ["git", "status", "--porcelain"],
             capture_output=True,
             text=True,
             env=env,
         )
-        logger.debug(f"git status --porcelain output: {dirty_result.stdout!r}")
-        if dirty_result.stdout.strip():
-            logger.error("Repository has uncommitted changes and allow_dirty is False")
-            app = QApplication(sys.argv)
-            dlg = ErrorDialog(
+        if result.stdout.strip():
+            show_git_error_dialog(
                 "Repository has uncommitted changes. Please commit or stash them before continuing.",
                 exit_code=1,
-                parent=None,
                 header_message="Uncommitted Changes Detected",
             )
-            dlg.exec()
-            sys.exit(1)
 
-    # --- Check forbidden_source_branches before proceeding ---
+def validate_source_branch(env: dict[str, str]) -> None:
+    """Validate that the current branch is not forbidden as a source branch."""
+    config = load_config()
     forbidden_patterns = config.get("forbidden_source_branches", [])
     if forbidden_patterns:
-        logger.debug(f"Checking forbidden_source_branches: {forbidden_patterns}")
         current_branch = get_current_git_branch(env=env)
         for pattern in forbidden_patterns:
             try:
                 regex = re.compile(pattern)
                 if regex.fullmatch(current_branch):
-                    logger.error(
-                        f"Current branch '{current_branch}' matches forbidden pattern '{pattern}' from configuration"
-                    )
-                    app = QApplication(sys.argv)
-                    dlg = ErrorDialog(
-                        f"Branch <b>{current_branch}</b> is not allowed as a source branch for new branches.",
+                    show_git_error_dialog(
+                        f"Branch {current_branch} is not allowed as a source branch for new branches.",
                         exit_code=1,
-                        parent=None,
                         header_message="Forbidden Source Branch",
                     )
-                    dlg.exec()
-                    sys.exit(1)
             except re.error as exc:
                 logger.error(f"Invalid regex in forbidden_source_branches: {pattern} ({exc})")
-    # --- New logic: pre-fill JIRA from current branch if possible ---
 
-    logger.debug("Attempting to pre-fill JIRA from current branch using env: {}", _filtered_env_for_log(env))
+def extract_prefill_jira(env: dict[str, str]) -> Optional[str]:
+    """Extract JIRA issue from the current branch name."""
     current_branch = get_current_git_branch(env=env)
-    logger.debug(f"Current branch detected: {current_branch!r}")
-
-    prefill_jira = None
     if current_branch:
-        # Try to match username/type/jira/description exactly
         regexes = load_regexes()
-
-        username_re = strip_anchors(regexes["username"].pattern)
-        type_re = strip_anchors(regexes["type"].pattern)
-        jira_re = strip_anchors(regexes["jira"].pattern)
-        desc_re = strip_anchors(regexes["description"].pattern)
-        logger.debug(
-            f"Regex patterns (no anchors): username={username_re!r}, type={type_re!r}, "
-            f"jira={jira_re!r}, desc={desc_re!r}"
-        )
         pattern = re.compile(
-            rf"^(?P<username>{username_re})/(?P<type>{type_re})/(?P<jira>{jira_re})/(?P<desc>{desc_re})$",
+            rf"^(?P<username>{strip_anchors(regexes['username'].pattern)})"
+            rf"/(?P<type>{strip_anchors(regexes['type'].pattern)})"
+            rf"/(?P<jira>{strip_anchors(regexes['jira'].pattern)})"
+            rf"/(?P<desc>{strip_anchors(regexes['description'].pattern)})$",
             re.IGNORECASE,
         )
-        logger.debug(f"Compiled branch pattern: {pattern.pattern}")
-        m = pattern.match(current_branch)
-        if m:
-            prefill_jira = m.group("jira")
-            logger.debug(f"JIRA prefill matched from branch: {prefill_jira}")
-        else:
-            logger.debug("Current branch did not match the expected pattern for JIRA prefill")
-    # --------------------------------------------------------------
+        match = pattern.match(current_branch)
+        if match:
+            return match.group("jira")
+    return None
 
-    app = QApplication(sys.argv)
-    dlg = BranchDialog(env=env, prefill_jira=prefill_jira)
-    result = dlg.exec()
-    # Use sys.exit here if you want to set an exit code
+def handle_dialog_result(result: int, app: QApplication) -> None:
+    """Handle the result of the BranchDialog."""
     if result == QDialog.DialogCode.Accepted:
-        app.exec()  # Wait for any further dialogs (e.g., SuccessDialog) to finish
+        app.exec()
         sys.exit(0)
     else:
-        sys.exit(0)  # Changed from 100 to 0 for cancel
+        sys.exit(0)
