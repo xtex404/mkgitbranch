@@ -554,6 +554,7 @@ class BranchDialog(QDialog):
             bool: True if event handled, else False.
         """
         from PySide6.QtGui import QKeyEvent
+
         # Tab in JIRA field: jump after dash if selected
         if obj == self.jira_edit and event.type() == QEvent.Type.KeyPress:
             if isinstance(event, QKeyEvent) and event.key() == Qt.Key.Key_Tab:
@@ -563,6 +564,7 @@ class BranchDialog(QDialog):
                         self.jira_edit.setCursorPosition(dash_pos + 1)
                         self.jira_edit.deselect()
                         return True
+
         # Tab or Enter in description field: focus/create
         if obj == self.desc_edit and event.type() == QEvent.Type.KeyPress:
             if isinstance(event, QKeyEvent) and event.key() == Qt.Key.Key_Tab:
@@ -572,6 +574,19 @@ class BranchDialog(QDialog):
                 if self.create_btn.isEnabled():
                     self.create_branch()
                     return True
+                else:
+                    QApplication.beep()
+                    return True
+
+        # Prevent ENTER from activating Cancel when Create is not enabled
+        if obj in (self.username_edit, self.type_combo, self.jira_edit) and event.type() == QEvent.Type.KeyPress:
+            if isinstance(event, QKeyEvent) and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                if self.create_btn.isEnabled():
+                    self.create_branch()
+                else:
+                    QApplication.beep()
+                return True
+
         return super().eventFilter(obj, event)
 
     def __init__(
@@ -743,9 +758,15 @@ class BranchDialog(QDialog):
         cursor_start = config.get("cursor_start", "description")
         jira_regex = self.regexes["jira"]
         jira_text = self.jira_edit.text()
+        # --- Add 'type' as a valid option for cursor_start ---
         if cursor_start == "username":
             self.username_edit.setFocus()
             self.username_edit.setCursorPosition(0)
+        elif cursor_start == "type":
+            self.type_combo.setFocus()
+            # Optionally select the text in the combo box if editable
+            if self.type_combo.lineEdit() is not None:
+                self.type_combo.lineEdit().selectAll()
         elif cursor_start == "jira_start":
             self.jira_edit.setFocus()
             self.jira_edit.selectAll()
@@ -918,6 +939,53 @@ def run_app() -> None:
         dlg.exec()
         sys.exit(1)
 
+    # --- Check for dirty repo if allow_dirty is False ---
+    config = load_config()
+    allow_dirty = config.get("allow_dirty", False)
+    if not allow_dirty:
+        logger.debug("Checking for dirty working tree because allow_dirty is False or unset")
+        dirty_result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        logger.debug(f"git status --porcelain output: {dirty_result.stdout!r}")
+        if dirty_result.stdout.strip():
+            logger.error("Repository has uncommitted changes and allow_dirty is False")
+            app = QApplication(sys.argv)
+            dlg = ErrorDialog(
+                "Repository has uncommitted changes. Please commit or stash them before continuing.",
+                exit_code=1,
+                parent=None,
+                header_message="Uncommitted Changes Detected",
+            )
+            dlg.exec()
+            sys.exit(1)
+
+    # --- Check forbidden_source_branches before proceeding ---
+    forbidden_patterns = config.get("forbidden_source_branches", [])
+    if forbidden_patterns:
+        logger.debug(f"Checking forbidden_source_branches: {forbidden_patterns}")
+        current_branch = get_current_git_branch(env=env)
+        for pattern in forbidden_patterns:
+            try:
+                regex = re.compile(pattern)
+                if regex.fullmatch(current_branch):
+                    logger.error(
+                        f"Current branch '{current_branch}' matches forbidden pattern '{pattern}' from configuration"
+                    )
+                    app = QApplication(sys.argv)
+                    dlg = ErrorDialog(
+                        f"Branch <b>{current_branch}</b> is not allowed as a source branch for new branches.",
+                        exit_code=1,
+                        parent=None,
+                        header_message="Forbidden Source Branch",
+                    )
+                    dlg.exec()
+                    sys.exit(1)
+            except re.error as exc:
+                logger.error(f"Invalid regex in forbidden_source_branches: {pattern} ({exc})")
     # --- New logic: pre-fill JIRA from current branch if possible ---
 
     logger.debug("Attempting to pre-fill JIRA from current branch using env: {}", _filtered_env_for_log(env))
