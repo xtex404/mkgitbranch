@@ -6,8 +6,8 @@
 # For project-specific settings, you can also embed these options in [tool.mkgitbranch] in pyproject.toml.
 
 # The username to use as the branch prefix.
-# If omitted, the current OS username will be used.
-username = "jm"
+# If omitted, the current OS username will be used. Make sure this will be allowed by your regex.
+username = "justin"
 
 # If true, the username field will be read-only in the GUI.
 username_readonly = false
@@ -19,12 +19,18 @@ jira_prefix = "IAS-"
 timeout_minutes = 10
 
 # Which field should be focused when the dialog opens.
-# Valid values: "description", "username", "jira_start", "jira_after_dash"
+# Valid values: "description", "username", "jira_start", "jira_after_dash", "type"
 cursor_start = "description"
 
 # Template for the branch creation command.
 # {branch_name} will be replaced with the generated branch name.
-branch_create_command_template = 'git switch --quiet --create --track "{branch_name}"'
+branch_create_command_template = 'git switch --quiet --track --create "{branch_name}"'
+
+# if true, a branch can be created when there are uncommitted changes in the currrent branch.
+allow_dirty = true
+
+# List of regex patterns; if the current branch matches any, new branches cannot be created from it.
+forbidden_source_branches = []
 
 [regex]
 # Regular expression for validating the username field.
