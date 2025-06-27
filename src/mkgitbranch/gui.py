@@ -12,9 +12,9 @@ import argparse
 import os
 import re
 import subprocess
+import random
 from pathlib import Path
 from typing import Any
-from functools import lru_cache
 
 from PySide6.QtCore import QUrl, Qt, QTimer, QEvent
 from PySide6.QtGui import QClipboard
@@ -589,6 +589,69 @@ class BranchDialog(QDialog):
 
         return super().eventFilter(obj, event)
 
+    def keyPressEvent(self, event):
+        """
+        Easter egg: On Ctrl+R, fill the description field with 2-4 random words from a word list.
+        """
+        if event.modifiers() & Qt.ControlModifier and event.key() == Qt.Key_R:
+            words = self._get_random_words()
+            if words:
+                self.desc_edit.setText("-".join(words))
+                self.update_preview()
+            return
+        super().keyPressEvent(event)
+
+    def _get_random_words(self) -> list[str]:
+        """
+        Load a word list from config or default, shuffle it, and return 2-4 random words.
+
+        Returns:
+            list[str]: A list of random words.
+        """
+        from pathlib import Path
+        import os
+
+        logger.debug("Starting _get_random_words function")
+
+        if self._cached_words is None:
+            config = load_config()
+            word_list_path = config.get("word_list_path")
+            if word_list_path:
+                path = Path(word_list_path).expanduser().resolve()
+            else:
+                path = Path(__file__).parent / "resources" / "words.txt"
+
+            logger.debug(f"Attempting to load word list from: {path}")
+            try:
+                with path.open("r", encoding="utf-8") as f:
+                    self._cached_words = [
+                        line.strip() for line in f if line.strip() and not line.startswith("#")
+                    ]
+                logger.debug(f"Loaded {len(self._cached_words)} words from {path}")
+            except FileNotFoundError:
+                logger.error(f"Word list file not found: {path}")
+                self._cached_words = []
+            except Exception as e:
+                logger.error(f"Failed to load word list from {path}: {e}")
+                self._cached_words = []
+
+        if len(self._cached_words) < 2:
+            logger.warning("Insufficient words in word list; returning an empty list")
+            return []
+
+        # Seed randomness using os.urandom for cross-platform compatibility
+        random.seed(os.urandom(16))
+        logger.debug("Random seed initialized using os.urandom")
+
+        # Shuffle the word list for better randomness
+        random.shuffle(self._cached_words)
+        logger.debug("Word list shuffled")
+
+        # Return 2-4 random words
+        num_words = random.randint(2, 4)
+        logger.debug(f"Returning {num_words} random words")
+        return self._cached_words[:num_words]
+
     def __init__(
         self,
         parent: Any = None,
@@ -603,16 +666,16 @@ class BranchDialog(QDialog):
             env: Optional environment variables for subprocesses.
             prefill_jira: JIRA value to pre-fill, if available.
         """
-        # --- Dialog setup and config ---
         super().__init__(parent)
         self.env = env or None
         self.setWindowTitle("Generate Conventional Git Branch Name")
         self.setMinimumWidth(500)
 
+        self._cached_words = None  # Cache for the word list
+
         config = load_config()
         self.regexes = load_regexes()
 
-        # --- Pre-fill fields based on current branch and config ---
         branch = get_current_git_branch(env=self.env) or ""
         jira, type_ = parse_branch_for_jira_and_type(branch)
         config_username = config.get("username", None)
@@ -620,7 +683,6 @@ class BranchDialog(QDialog):
         username_readonly = config.get("username_readonly", False)
         effective_jira = prefill_jira if prefill_jira is not None else (jira or None)
 
-        # --- Setup fields, UI, timers, and preview ---
         self._setup_fields(username, username_readonly, type_, effective_jira, config)
         self._setup_ui(config)
         self._setup_timers(config)
